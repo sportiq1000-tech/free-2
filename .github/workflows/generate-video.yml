@@ -1,0 +1,106 @@
+name: Generate Video
+
+on:
+  repository_dispatch:
+    types: [generate-video]
+  
+  workflow_dispatch:
+    inputs:
+      script_text:
+        description: 'Video script text'
+        required: true
+        default: 'Welcome to this relaxing history video about ancient civilizations.'
+      image_urls:
+        description: 'Comma-separated image URLs'
+        required: true
+        default: 'https://image.pollinations.ai/prompt/ancient%20rome%20sunset'
+      video_title:
+        description: 'Video title'
+        required: true
+        default: 'Test Video'
+      job_id:
+        description: 'Unique job ID'
+        required: true
+        default: 'test-001'
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install edge-tts aiofiles google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client requests Pillow
+
+      - name: Set variables from dispatch
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" == "repository_dispatch" ]; then
+            echo "script_text<<EOF" >> $GITHUB_OUTPUT
+            echo '${{ toJson(github.event.client_payload.script_text) }}' | jq -r '.' >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "image_urls=${{ github.event.client_payload.image_urls }}" >> $GITHUB_OUTPUT
+            echo "video_title=${{ github.event.client_payload.video_title }}" >> $GITHUB_OUTPUT
+            echo "job_id=${{ github.event.client_payload.job_id }}" >> $GITHUB_OUTPUT
+            echo "webhook_url=${{ github.event.client_payload.webhook_url }}" >> $GITHUB_OUTPUT
+          else
+            echo "script_text<<EOF" >> $GITHUB_OUTPUT
+            echo "${{ github.event.inputs.script_text }}" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "image_urls=${{ github.event.inputs.image_urls }}" >> $GITHUB_OUTPUT
+            echo "video_title=${{ github.event.inputs.video_title }}" >> $GITHUB_OUTPUT
+            echo "job_id=${{ github.event.inputs.job_id }}" >> $GITHUB_OUTPUT
+            echo "webhook_url=${{ secrets.N8N_WEBHOOK_URL }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Google credentials file
+        run: |
+          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
+
+      - name: Generate video
+        id: generate
+        env:
+          SCRIPT_TEXT: ${{ steps.vars.outputs.script_text }}
+          IMAGE_URLS: ${{ steps.vars.outputs.image_urls }}
+          VIDEO_TITLE: ${{ steps.vars.outputs.video_title }}
+          JOB_ID: ${{ steps.vars.outputs.job_id }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+        run: |
+          python scripts/video_generator.py
+
+      - name: Notify n8n webhook
+        if: always()
+        run: |
+          WEBHOOK_URL="${{ steps.vars.outputs.webhook_url }}"
+          if [ -n "$WEBHOOK_URL" ] && [ "$WEBHOOK_URL" != "null" ]; then
+            if [ -f "result.json" ]; then
+              curl -X POST "$WEBHOOK_URL" \
+                -H "Content-Type: application/json" \
+                -d @result.json || true
+            else
+              curl -X POST "$WEBHOOK_URL" \
+                -H "Content-Type: application/json" \
+                -d '{"status": "failed", "job_id": "${{ steps.vars.outputs.job_id }}", "error": "Video generation failed"}' || true
+            fi
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f credentials.json
+          rm -f *.mp3 *.mp4 *.jpg *.png
