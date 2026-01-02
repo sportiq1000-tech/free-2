@@ -5,7 +5,7 @@ import requests
 import subprocess
 from pathlib import Path
 
-# Configuration
+# Configuration from environment variables
 SCRIPT_TEXT = os.environ.get('SCRIPT_TEXT', 'Welcome to this history video.')
 IMAGE_URLS = os.environ.get('IMAGE_URLS', '').split(',')
 VIDEO_TITLE = os.environ.get('VIDEO_TITLE', 'History Video')
@@ -13,10 +13,11 @@ JOB_ID = os.environ.get('JOB_ID', 'unknown')
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID', '')
 RCLONE_TOKEN = os.environ.get('RCLONE_TOKEN', '')
 
-# Voice settings
+# Voice settings (calm, slow voice for sleep content)
 VOICE = "en-US-GuyNeural"
 RATE = "-20%"
 PITCH = "-5Hz"
+
 
 def download_images(urls, output_dir="images"):
     """Download images from URLs"""
@@ -30,7 +31,7 @@ def download_images(urls, output_dir="images"):
             
         try:
             print(f"Downloading image {i+1}: {url[:80]}...")
-            response = requests.get(url, timeout=60)
+            response = requests.get(url, timeout=120)
             
             if response.status_code == 200:
                 content_type = response.headers.get('content-type', 'image/jpeg')
@@ -47,7 +48,7 @@ def download_images(urls, output_dir="images"):
         except Exception as e:
             print(f"  ✗ Error: {e}")
     
-    # Create placeholder if no images
+    # Create placeholder if no images downloaded
     if not downloaded:
         print("Creating placeholder image...")
         placeholder = f"{output_dir}/image_000.jpg"
@@ -59,6 +60,7 @@ def download_images(urls, output_dir="images"):
             downloaded.append(placeholder)
     
     return downloaded
+
 
 async def generate_audio(text, output_file="audio.mp3"):
     """Generate audio using Edge-TTS"""
@@ -78,8 +80,9 @@ async def generate_audio(text, output_file="audio.mp3"):
     
     return output_file
 
+
 def get_audio_duration(audio_file):
-    """Get duration of audio file"""
+    """Get duration of audio file in seconds"""
     result = subprocess.run([
         'ffprobe', '-v', 'error',
         '-show_entries', 'format=duration',
@@ -89,24 +92,30 @@ def get_audio_duration(audio_file):
     
     return float(result.stdout.strip())
 
+
 def create_video(images, audio_file, output_file="output.mp4"):
-    """Create video from images and audio"""
+    """Create video from images and audio using FFmpeg"""
     print("Creating video...")
     
+    # Get audio duration
     duration = get_audio_duration(audio_file)
     print(f"  Audio duration: {duration:.1f} seconds")
     
+    # Calculate time per image
     num_images = len(images)
     time_per_image = duration / num_images
     print(f"  Images: {num_images}, Time per image: {time_per_image:.1f}s")
     
+    # Create concat file for FFmpeg
     concat_file = "concat.txt"
     with open(concat_file, 'w') as f:
         for img in images:
             f.write(f"file '{img}'\n")
             f.write(f"duration {time_per_image}\n")
+        # Add last image again (FFmpeg requirement)
         f.write(f"file '{images[-1]}'\n")
     
+    # FFmpeg command to create video
     cmd = [
         'ffmpeg',
         '-f', 'concat',
@@ -132,9 +141,12 @@ def create_video(images, audio_file, output_file="output.mp4"):
         raise Exception(f"FFmpeg failed: {result.stderr}")
     
     print(f"  ✓ Video created: {output_file}")
+    
+    # Cleanup concat file
     os.remove(concat_file)
     
     return output_file
+
 
 def upload_to_drive(file_path, folder_id):
     """Upload video to Google Drive using rclone"""
@@ -143,7 +155,7 @@ def upload_to_drive(file_path, folder_id):
     if not RCLONE_TOKEN:
         raise Exception("RCLONE_TOKEN not set")
     
-    # Create rclone config
+    # Create rclone config file
     rclone_config = f"""[gdrive]
 type = drive
 scope = drive
@@ -154,39 +166,49 @@ token = {RCLONE_TOKEN}
     with open(config_path, 'w') as f:
         f.write(rclone_config)
     
-    # File name
-    file_name = f"{VIDEO_TITLE}_{JOB_ID}.mp4"
+    # Generate file name
+    # Clean video title (remove special characters)
+    clean_title = "".join(c for c in VIDEO_TITLE if c.isalnum() or c in (' ', '-', '_')).strip()
+    clean_title = clean_title.replace(' ', '_')
+    file_name = f"{clean_title}_{JOB_ID}.mp4"
     
-    # Copy file to Drive
+    print(f"  Uploading as: {file_name}")
+    
+    # Upload file using rclone copyto
     cmd = [
         'rclone',
         '--config', config_path,
         'copyto',
         file_path,
         f"gdrive:Generated_Videos/{file_name}",
-        '-v'
+        '-v',
+        '--retries', '3',
+        '--low-level-retries', '10'
     ]
     
     result = subprocess.run(cmd, capture_output=True, text=True)
-    print(f"rclone output: {result.stdout}")
+    
+    print(f"  rclone stdout: {result.stdout}")
     
     if result.returncode != 0:
-        print(f"rclone error: {result.stderr}")
+        print(f"  rclone stderr: {result.stderr}")
         raise Exception(f"rclone failed: {result.stderr}")
     
-    # Cleanup
+    # Cleanup config file
     os.remove(config_path)
     
     print(f"  ✓ Uploaded: {file_name}")
     
+    # Return result
     return {
         'file_name': file_name,
         'folder_link': f"https://drive.google.com/drive/folders/{folder_id}",
         'status': 'uploaded'
     }
 
+
 def save_result(status, data=None, error=None):
-    """Save result to JSON"""
+    """Save result to JSON for webhook notification"""
     result = {
         'status': status,
         'job_id': JOB_ID,
@@ -203,39 +225,53 @@ def save_result(status, data=None, error=None):
     
     print(f"\nResult: {json.dumps(result, indent=2)}")
 
+
 async def main():
-    """Main pipeline"""
-    print("=" * 50)
+    """Main video generation pipeline"""
+    print("=" * 60)
     print("VIDEO GENERATION STARTED")
-    print("=" * 50)
-    print(f"Job ID: {JOB_ID}")
-    print(f"Title: {VIDEO_TITLE}")
+    print("=" * 60)
+    print(f"Job ID:        {JOB_ID}")
+    print(f"Title:         {VIDEO_TITLE}")
     print(f"Script length: {len(SCRIPT_TEXT)} characters")
-    print(f"Image URLs: {len(IMAGE_URLS)}")
-    print("=" * 50)
+    print(f"Image URLs:    {len(IMAGE_URLS)}")
+    print(f"Drive Folder:  {DRIVE_FOLDER_ID[:20]}..." if DRIVE_FOLDER_ID else "Drive Folder:  Not set")
+    print(f"Rclone Token:  {'Set' if RCLONE_TOKEN else 'Not set'}")
+    print("=" * 60)
     
     try:
+        # Step 1: Download images
+        print("\n[STEP 1/4] Downloading images...")
         images = download_images(IMAGE_URLS)
         if not images:
             raise Exception("No images downloaded")
         
+        # Step 2: Generate audio
+        print("\n[STEP 2/4] Generating audio...")
         audio_file = await generate_audio(SCRIPT_TEXT)
+        
+        # Step 3: Create video
+        print("\n[STEP 3/4] Creating video...")
         video_file = create_video(images, audio_file)
         
+        # Step 4: Upload to Drive
+        print("\n[STEP 4/4] Uploading to Google Drive...")
         if DRIVE_FOLDER_ID and RCLONE_TOKEN:
             drive_result = upload_to_drive(video_file, DRIVE_FOLDER_ID)
             save_result('success', drive_result)
         else:
+            print("  ⚠ Skipping upload (Drive not configured)")
             save_result('success', {'note': 'No Drive upload configured'})
         
-        print("\n" + "=" * 50)
-        print("VIDEO GENERATION COMPLETE!")
-        print("=" * 50)
+        print("\n" + "=" * 60)
+        print("✓ VIDEO GENERATION COMPLETE!")
+        print("=" * 60)
         
     except Exception as e:
         print(f"\n✗ ERROR: {e}")
         save_result('failed', error=str(e))
         raise
+
 
 if __name__ == "__main__":
     asyncio.run(main())
