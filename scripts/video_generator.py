@@ -13,10 +13,38 @@ JOB_ID = os.environ.get('JOB_ID', 'unknown')
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID', '')
 RCLONE_TOKEN = os.environ.get('RCLONE_TOKEN', '')
 
-# Voice settings (calm, slow voice for sleep content)
-VOICE = "en-US-GuyNeural"
-RATE = "-15%"
-PITCH = "-3Hz"
+# ============================================
+# VOICE SETTINGS - Customize here!
+# ============================================
+# Available voices:
+# - en-US-DavisNeural (deep, calm male) ⭐ RECOMMENDED
+# - en-US-GuyNeural (neutral male)
+# - en-US-TonyNeural (warm male)
+# - en-GB-RyanNeural (British male)
+# - en-US-JennyNeural (calm female)
+# - en-AU-WilliamNeural (Australian male)
+
+VOICE = os.environ.get('VOICE', 'en-US-DavisNeural')
+
+# Rate: -20% to +20% (negative = slower)
+# Recommended: -5% to -10% for calm content
+RATE = os.environ.get('RATE', '-8%')
+
+# Pitch: -10Hz to +10Hz (negative = deeper)
+# Recommended: -2Hz to +0Hz for calm content
+PITCH = os.environ.get('PITCH', '-2Hz')
+
+# ============================================
+# ZOOM/PAN SETTINGS - Customize here!
+# ============================================
+# Zoom speed: 0.0003 (very slow) to 0.002 (fast)
+ZOOM_SPEED = float(os.environ.get('ZOOM_SPEED', '0.0005'))
+
+# Zoom range: 1.1 (subtle) to 1.5 (dramatic)
+ZOOM_MAX = float(os.environ.get('ZOOM_MAX', '1.25'))
+
+# Effect style: 'alternate', 'zoom_in_only', 'zoom_out_only', 'pan'
+ZOOM_STYLE = os.environ.get('ZOOM_STYLE', 'alternate')
 
 
 def download_images(urls, output_dir="images"):
@@ -36,7 +64,7 @@ def download_images(urls, output_dir="images"):
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             
-            response = requests.get(url, headers=headers, timeout=60)
+            response = requests.get(url, headers=headers, timeout=120)
             
             if response.status_code == 200:
                 content_type = response.headers.get('content-type', 'image/jpeg')
@@ -46,9 +74,8 @@ def download_images(urls, output_dir="images"):
                 with open(filepath, 'wb') as f:
                     f.write(response.content)
                 
-                # Check file size
                 file_size = os.path.getsize(filepath)
-                if file_size > 5000:  # > 5KB
+                if file_size > 5000:
                     downloaded.append(filepath)
                     print(f"    ✓ Saved: {filepath} ({file_size // 1024}KB)")
                 else:
@@ -60,7 +87,6 @@ def download_images(urls, output_dir="images"):
         except Exception as e:
             print(f"    ✗ Error: {e}")
     
-    # Create dark placeholder if no images
     if not downloaded:
         print("  Creating placeholder image...")
         placeholder = f"{output_dir}/image_000.jpg"
@@ -78,10 +104,13 @@ def download_images(urls, output_dir="images"):
 
 
 async def generate_audio(text, output_file="audio.mp3"):
-    """Generate audio using Edge-TTS"""
+    """Generate audio using Edge-TTS with custom voice settings"""
     import edge_tts
     
     print(f"  Generating audio ({len(text)} characters)...")
+    print(f"    Voice: {VOICE}")
+    print(f"    Rate: {RATE}")
+    print(f"    Pitch: {PITCH}")
     
     communicate = edge_tts.Communicate(
         text=text,
@@ -92,7 +121,6 @@ async def generate_audio(text, output_file="audio.mp3"):
     
     await communicate.save(output_file)
     
-    # Get duration
     result = subprocess.run([
         'ffprobe', '-v', 'error',
         '-show_entries', 'format=duration',
@@ -119,8 +147,11 @@ def get_audio_duration(audio_file):
 
 
 def create_video(images, audio_file, output_file="output.mp4"):
-    """Create video with Ken Burns zoom effect"""
+    """Create video with customizable Ken Burns zoom/pan effect"""
     print("  Creating video with zoom effects...")
+    print(f"    Zoom Speed: {ZOOM_SPEED}")
+    print(f"    Zoom Max: {ZOOM_MAX}")
+    print(f"    Style: {ZOOM_STYLE}")
     
     duration = get_audio_duration(audio_file)
     num_images = len(images)
@@ -128,29 +159,39 @@ def create_video(images, audio_file, output_file="output.mp4"):
     
     print(f"    Audio: {duration:.1f}s, Images: {num_images}, Per image: {time_per_image:.1f}s")
     
-    # Create clips with zoom effect
     temp_clips = []
+    fps = 25
     
     for i, img in enumerate(images):
         clip_path = f"/tmp/clip_{i:03d}.mp4"
-        
-        # Calculate frames for this clip
-        fps = 25
         frames = int(time_per_image * fps)
         
-        # Alternate zoom direction
-        if i % 2 == 0:
-            # Zoom in
-            zoom = f"zoompan=z='min(zoom+0.001,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080:fps={fps}"
+        # Determine zoom direction based on style
+        if ZOOM_STYLE == 'zoom_in_only':
+            zoom_in = True
+        elif ZOOM_STYLE == 'zoom_out_only':
+            zoom_in = False
+        elif ZOOM_STYLE == 'pan':
+            # Pan effect (move across image)
+            zoom_in = None
+        else:  # 'alternate' (default)
+            zoom_in = (i % 2 == 0)
+        
+        if zoom_in is None:
+            # Pan effect
+            zoom_filter = f"zoompan=z='1.1':x='if(lte(on,1),0,x+2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080:fps={fps}"
+        elif zoom_in:
+            # Zoom in effect
+            zoom_filter = f"zoompan=z='min(zoom+{ZOOM_SPEED},{ZOOM_MAX})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080:fps={fps}"
         else:
-            # Zoom out
-            zoom = f"zoompan=z='if(lte(zoom,1.0),1.3,max(1.001,zoom-0.001))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080:fps={fps}"
+            # Zoom out effect
+            zoom_filter = f"zoompan=z='if(lte(zoom,1.0),{ZOOM_MAX},max(1.001,zoom-{ZOOM_SPEED}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080:fps={fps}"
         
         cmd = [
             'ffmpeg',
             '-loop', '1',
             '-i', img,
-            '-vf', f"scale=4000:-1,{zoom}",
+            '-vf', f"scale=4000:-1,{zoom_filter}",
             '-t', str(time_per_image),
             '-c:v', 'libx264',
             '-preset', 'fast',
@@ -166,7 +207,6 @@ def create_video(images, audio_file, output_file="output.mp4"):
             print(f"    ✓ Clip {i+1}/{num_images}")
         else:
             print(f"    ✗ Clip {i+1} failed, using fallback")
-            # Fallback: simple static image
             fallback_cmd = [
                 'ffmpeg',
                 '-loop', '1',
@@ -186,13 +226,11 @@ def create_video(images, audio_file, output_file="output.mp4"):
     if not temp_clips:
         raise Exception("No video clips created")
     
-    # Concatenate clips
     concat_file = "/tmp/concat.txt"
     with open(concat_file, 'w') as f:
         for clip in temp_clips:
             f.write(f"file '{clip}'\n")
     
-    # Merge with audio
     cmd = [
         'ffmpeg',
         '-f', 'concat',
@@ -211,7 +249,6 @@ def create_video(images, audio_file, output_file="output.mp4"):
     
     result = subprocess.run(cmd, capture_output=True, text=True)
     
-    # Cleanup
     for clip in temp_clips:
         try:
             os.remove(clip)
@@ -225,7 +262,6 @@ def create_video(images, audio_file, output_file="output.mp4"):
     if result.returncode != 0:
         raise Exception(f"Video merge failed: {result.stderr}")
     
-    # Get final video info
     size = os.path.getsize(output_file) // 1024 // 1024
     print(f"  ✓ Video created: {output_file} ({size}MB)")
     
@@ -239,7 +275,6 @@ def upload_to_drive(file_path, folder_id):
     if not RCLONE_TOKEN:
         raise Exception("RCLONE_TOKEN not set")
     
-    # Create rclone config
     config = f"""[gdrive]
 type = drive
 scope = drive
@@ -250,12 +285,10 @@ token = {RCLONE_TOKEN}
     with open(config_path, 'w') as f:
         f.write(config)
     
-    # Clean filename
     clean_title = "".join(c for c in VIDEO_TITLE if c.isalnum() or c in ' -_').strip()
     clean_title = clean_title.replace(' ', '_')[:50]
     file_name = f"{clean_title}_{JOB_ID}.mp4"
     
-    # Upload
     cmd = [
         'rclone',
         '--config', config_path,
@@ -304,12 +337,12 @@ async def main():
     print("=" * 60)
     print("VIDEO GENERATION STARTED")
     print("=" * 60)
-    print(f"Job ID:        {JOB_ID}")
-    print(f"Title:         {VIDEO_TITLE}")
-    print(f"Script:        {len(SCRIPT_TEXT)} characters")
-    print(f"Images:        {len([u for u in IMAGE_URLS if u.strip()])} URLs")
-    print(f"Drive:         {'✓' if DRIVE_FOLDER_ID else '✗'}")
-    print(f"Rclone:        {'✓' if RCLONE_TOKEN else '✗'}")
+    print(f"Job ID:     {JOB_ID}")
+    print(f"Title:      {VIDEO_TITLE}")
+    print(f"Script:     {len(SCRIPT_TEXT)} characters")
+    print(f"Images:     {len([u for u in IMAGE_URLS if u.strip()])} URLs")
+    print(f"Voice:      {VOICE} (Rate: {RATE}, Pitch: {PITCH})")
+    print(f"Zoom:       Speed={ZOOM_SPEED}, Max={ZOOM_MAX}, Style={ZOOM_STYLE}")
     print("=" * 60)
     
     try:
