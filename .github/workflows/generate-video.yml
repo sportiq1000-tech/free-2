@@ -78,12 +78,6 @@ jobs:
           JOB_ID: ${{ steps.vars.outputs.job_id }}
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
           RCLONE_TOKEN: ${{ secrets.RCLONE_TOKEN }}
-          VOICE: ${{ github.event.client_payload.voice }}
-          RATE: ${{ github.event.client_payload.rate }}
-          PITCH: ${{ github.event.client_payload.pitch }}
-          ZOOM_SPEED: ${{ github.event.client_payload.zoom_speed }}
-          ZOOM_MAX: ${{ github.event.client_payload.zoom_max }}
-          ZOOM_STYLE: ${{ github.event.client_payload.zoom_style }}
         run: |
           python scripts/video_generator.py
 
