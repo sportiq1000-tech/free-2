@@ -24,7 +24,7 @@ RCLONE_TOKEN = os.environ.get('RCLONE_TOKEN', '')
 # - en-US-JennyNeural (calm female)
 # - en-AU-WilliamNeural (Australian male)
 
-VOICE = os.environ.get('VOICE', 'en-US-DavisNeural')
+VOICE = os.environ.get('VOICE', 'en-US-ChristopherNeural')
 
 # Rate: -20% to +20% (negative = slower)
 # Recommended: -5% to -10% for calm content
