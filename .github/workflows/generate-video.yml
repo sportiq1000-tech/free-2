@@ -22,6 +22,14 @@ on:
         description: 'Unique job ID'
         required: true
         default: 'test-001'
+      voice:
+        description: 'TTS Voice'
+        required: true
+        default: 'en-US-ChristopherNeural'
+      zoom_speed:
+        description: 'Zoom speed for images'
+        required: true
+        default: '0.0005'
 
 jobs:
   generate:
@@ -59,6 +67,8 @@ jobs:
             echo "video_title=${{ github.event.client_payload.video_title }}" >> $GITHUB_OUTPUT
             echo "job_id=${{ github.event.client_payload.job_id }}" >> $GITHUB_OUTPUT
             echo "webhook_url=${{ github.event.client_payload.webhook_url }}" >> $GITHUB_OUTPUT
+            echo "voice=${{ github.event.client_payload.voice }}" >> $GITHUB_OUTPUT
+            echo "zoom_speed=${{ github.event.client_payload.zoom_speed }}" >> $GITHUB_OUTPUT
           else
             echo "script_text<<EOF" >> $GITHUB_OUTPUT
             echo "${{ github.event.inputs.script_text }}" >> $GITHUB_OUTPUT
@@ -67,6 +77,8 @@ jobs:
             echo "video_title=${{ github.event.inputs.video_title }}" >> $GITHUB_OUTPUT
             echo "job_id=${{ github.event.inputs.job_id }}" >> $GITHUB_OUTPUT
             echo "webhook_url=${{ secrets.N8N_WEBHOOK_URL }}" >> $GITHUB_OUTPUT
+            echo "voice=${{ github.event.inputs.voice }}" >> $GITHUB_OUTPUT
+            echo "zoom_speed=${{ github.event.inputs.zoom_speed }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Generate video
@@ -78,6 +90,8 @@ jobs:
           JOB_ID: ${{ steps.vars.outputs.job_id }}
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
           RCLONE_TOKEN: ${{ secrets.RCLONE_TOKEN }}
+          VOICE: ${{ steps.vars.outputs.voice }}
+          ZOOM_SPEED: ${{ steps.vars.outputs.zoom_speed }}
         run: |
           python scripts/video_generator.py
 
