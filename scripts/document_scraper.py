@@ -322,29 +322,78 @@ def check_narrative_content(text: str, document_type: str) -> bool:
 
 
 def clean_document_text(raw_text: str) -> str:
-    """Clean OCR text - same as before"""
+    """
+    Clean OCR text from historical documents
+    Skips headers, metadata, and table of contents
+    """
     
     if not raw_text:
         return ""
     
     text = raw_text
     
-    # Clean up
+    # STEP 1: Skip headers and front matter (first 5000 chars usually metadata/TOC)
+    # Look for where actual narrative content starts
+    if len(text) > 10000:
+        # Find a good starting point after metadata
+        # Look for paragraph breaks indicating end of TOC
+        potential_starts = []
+        
+        # Strategy 1: Find first occurrence of multi-line paragraph after char 3000
+        for i in range(3000, min(15000, len(text) - 1000)):
+            # Look for double newline followed by capital letter (start of paragraph)
+            if text[i:i+2] == '\n\n' and i+2 < len(text) and text[i+2].isupper():
+                # Check if this looks like narrative (not a heading)
+                next_section = text[i:i+200]
+                # Count periods (narrative has sentences)
+                periods = next_section.count('.')
+                if periods >= 2:  # At least 2 sentences
+                    potential_starts.append(i)
+                    if len(potential_starts) >= 3:  # Found enough candidates
+                        break
+        
+        # Use the first good starting point, or fallback to char 5000
+        if potential_starts:
+            text = text[potential_starts[0]:]
+            print(f"  Skipped {potential_starts[0]:,} header characters")
+        else:
+            # Fallback: just skip first 5000 chars
+            text = text[5000:]
+            print(f"  Skipped 5,000 header characters (fallback)")
+    
+    # STEP 2: Apply cleaning
+    
+    # Remove multiple newlines
     text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    # Remove multiple spaces
     text = re.sub(r'[ \t]+', ' ', text)
+    
+    # Join hyphenated words across lines
     text = re.sub(r'-\n', '', text)
+    
+    # Join broken sentences
     text = re.sub(r'\n([a-z])', r' \1', text)
+    
+    # Fix common OCR errors
     text = text.replace('|', 'I')
+    
+    # Fix quotes
     text = re.sub(r'["""]', '"', text)
     text = re.sub(r"[''']", "'", text)
+    
+    # Remove brackets like [sic]
     text = re.sub(r'\[.*?\]', '', text)
+    
+    # Remove page numbers at end of lines
     text = re.sub(r'\d{1,3}\s*$', '', text, flags=re.MULTILINE)
     
+    # STEP 3: Remove very short lines (likely headers/footers)
     lines = text.split('\n')
     lines = [line for line in lines if len(line.strip()) > 20 or line.strip() == '']
     text = '\n'.join(lines)
     
-    # Normalize old spellings
+    # STEP 4: Normalize old spellings
     old_spellings = [
         (r'\bto-day\b', 'today'),
         (r'\bto-morrow\b', 'tomorrow'),
