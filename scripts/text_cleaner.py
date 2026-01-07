@@ -294,61 +294,92 @@ def clean_gutenberg_text(
 
 def clean_for_narration(text: str, target_minutes: int = 10, api_key: str = None) -> Dict:
     """
-    Clean text and prepare it for narration
-    
-    Args:
-        text: Input text
-        target_minutes: Target duration in minutes
-        api_key: Groq API key
-        
-    Returns:
-        {
-            "text": str (trimmed to target length),
-            "word_count": int,
-            "estimated_minutes": float
-        }
+    Main function: 
+    1. Selects RAW chunk first
+    2. Cleans in SAFE small batches to avoid truncation
+    3. Trims to exact duration
     """
     
-    # Clean first
-    result = clean_gutenberg_text(text, api_key, use_llm=True)
-    cleaned = result["cleaned_text"]
+    print("\n[TEXT CLEANER - OPTIMIZED]")
     
-    # Calculate target words (slow reading: ~120 words/minute)
-    words_per_minute = 120
-    target_words = target_minutes * words_per_minute
+    # Calculate target words (slow reading ~120 wpm)
+    wpm = 120
+    target_words = target_minutes * wpm
+    print(f"  🎯 Target: {target_words} words ({target_minutes} mins)")
     
-    words = cleaned.split()
+    # Step 1: Select RAW chunk
+    raw_chunk = select_smart_chunk(text, target_words + 200) # Buffer
+    print(f"  ✂️ Raw chunk size: {len(raw_chunk)} chars")
     
-    if len(words) <= target_words:
-        # Text is short enough
-        return {
-            "text": cleaned,
-            "word_count": len(words),
-            "estimated_minutes": len(words) / words_per_minute
-        }
+    final_text = ""
     
-    # Trim to target length, ending at sentence
-    trimmed = ' '.join(words[:target_words])
+    # Step 2: Clean in safe batches (max 3000 chars per call)
+    if api_key or GROQ_API_KEY:
+        # Split raw chunk into smaller pieces to avoid truncation
+        # 3000 chars is safe for 4096 token output limit
+        batch_size = 3000
+        
+        # Split by paragraphs to keep context
+        paragraphs = raw_chunk.split('\n\n')
+        current_batch = []
+        current_len = 0
+        cleaned_parts = []
+        
+        print(f"  🔄 Splitting into safe batches...")
+        
+        for para in paragraphs:
+            if current_len + len(para) > batch_size:
+                # Process this batch
+                batch_text = '\n\n'.join(current_batch)
+                cleaned = clean_text_with_llm(batch_text, api_key)
+                cleaned_parts.append(cleaned)
+                
+                # Reset
+                current_batch = []
+                current_len = 0
+            
+            current_batch.append(para)
+            current_len += len(para)
+        
+        # Process final batch
+        if current_batch:
+            batch_text = '\n\n'.join(current_batch)
+            cleaned = clean_text_with_llm(batch_text, api_key)
+            cleaned_parts.append(cleaned)
+            
+        clean_chunk = '\n\n'.join(cleaned_parts)
+    else:
+        print("  ⚠️ No API key - using regex cleaning")
+        clean_chunk = fix_hard_wraps(raw_chunk)
+        
+    # Step 3: Trim to exact length (ending on sentence)
+    words = clean_chunk.split()
     
-    # Find last sentence end
-    last_period = trimmed.rfind('.')
-    last_question = trimmed.rfind('?')
-    last_exclaim = trimmed.rfind('!')
-    
-    last_sentence_end = max(last_period, last_question, last_exclaim)
-    
-    if last_sentence_end > len(trimmed) * 0.8:
-        trimmed = trimmed[:last_sentence_end + 1]
-    
-    final_words = len(trimmed.split())
-    
-    print(f"  ✂️ Trimmed: {len(words):,} → {final_words:,} words")
-    print(f"  ⏱️ Estimated: {final_words / words_per_minute:.1f} minutes")
+    if len(words) > target_words:
+        trimmed = ' '.join(words[:target_words])
+        
+        # Find last sentence end
+        last_period = trimmed.rfind('.')
+        last_question = trimmed.rfind('?')
+        last_exclaim = trimmed.rfind('!')
+        
+        last_sentence_end = max(last_period, last_question, last_exclaim)
+        
+        if last_sentence_end > len(trimmed) * 0.8:
+            trimmed = trimmed[:last_sentence_end + 1]
+            
+        final_text = trimmed
+    else:
+        final_text = clean_chunk
+        
+    final_words = len(final_text.split())
+    print(f"  ✅ Final text: {final_words} words")
     
     return {
-        "text": trimmed,
+        "text": final_text,
         "word_count": final_words,
-        "estimated_minutes": final_words / words_per_minute
+        "estimated_minutes": final_words / wpm,
+        "method": "LLM Batch Clean"
     }
 
 
