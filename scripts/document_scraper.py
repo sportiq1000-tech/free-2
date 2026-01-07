@@ -101,8 +101,8 @@ QUALITY_THRESHOLDS = {
 def ai_skip_headers(raw_text: str, groq_api_key: str = None) -> str:
     """
     AI-powered header detection using Groq/Llama
-    Finds EXACTLY where real content starts
-    Works on ANY document source (Google Books, Archive.org, etc.)
+    Finds EXACTLY where real narrative content starts
+    Skips: Metadata, title pages, table of contents, and index pages
     """
     
     api_key = groq_api_key or GROQ_API_KEY
@@ -111,8 +111,8 @@ def ai_skip_headers(raw_text: str, groq_api_key: str = None) -> str:
         print("  No API key or text too short → using fallback")
         return brutal_header_skip(raw_text)
     
-    # Take first 8000 characters (covers all metadata we've seen)
-    sample = raw_text[:min(8000, len(raw_text))]
+    # Take larger sample to see past TOC (up to 15000 chars)
+    sample = raw_text[:min(15000, len(raw_text))]
     
     prompt = f"""You are an expert archival processor.
 
@@ -120,27 +120,34 @@ Here is the beginning of a scanned historical document (pre-1928):
 
 \"\"\"{sample}\"\"\"
 
-Your job: Find where the ACTUAL historical document content begins.
+Your job: Find where the ACTUAL NARRATIVE TEXT begins.
 
-IGNORE these modern additions:
+SKIP ALL OF THESE:
 - Google Books / Internet Archive metadata
-- "Digitized by", "Book from the collections of"
-- Library stamps, call numbers, URLs
-- Modern copyright notices
-- Title pages with decorative borders/symbols
-- Table of contents
-- Modern prefaces or introductions
+- "Digitized by", library stamps, URLs
+- Title pages with symbols
+- **TABLE OF CONTENTS** - lines like "Chapter 1 ..... 23" or "Agent, county- ..... 45"
+- **INDEX pages** - alphabetical lists with page numbers
+- Modern prefaces
 
-Find the FIRST line of the ORIGINAL document text.
+LOOK FOR:
+- Full sentences in paragraph form
+- Narrative text, NOT lists
+- Actual document content with complete thoughts
 
-Return ONLY a single number: the character position (0-indexed) where the real historical content starts.
+BAD (skip these):
+"Agent, county- first-aid service ..... 23"
+"Agricultural products ..... 45"
+"Chapter 1 ..... 12"
 
-Examples:
-- If content starts "ANNUAL REPORT OF THE...", return the position of 'A'
-- If content starts "CHAPTER I. The regulations...", return position of 'C'
-- If content starts "INTRODUCTION. The following...", return position of 'I'
+GOOD (start here):
+"The following report presents the activities of the Department during the fiscal year..."
+"CHAPTER I. INTRODUCTION. Agricultural extension work in the United States..."
+"During the period covered by this report, the Bureau..."
 
-Return ONLY the number. Nothing else."""
+Return ONLY the character position (number) where the first REAL paragraph begins.
+
+Return ONLY the number."""
 
     try:
         response = requests.post(
@@ -161,13 +168,41 @@ Return ONLY the number. Nothing else."""
         if response.status_code == 200:
             result = response.json()["choices"][0]["message"]["content"].strip()
             
-            # Extract number from response
             number_match = re.search(r'\d+', result)
             if number_match:
                 start_pos = int(number_match.group())
                 
-                # Sanity check (should be between 100 and 10000)
-                if 100 <= start_pos <= 10000 and start_pos < len(raw_text):
+                # Extended range for TOC (can be up to 20k chars in old books)
+                if 100 <= start_pos <= 20000 and start_pos < len(raw_text):
+                    
+                    # DOUBLE CHECK: Is the detected position actually narrative?
+                    snippet = raw_text[start_pos:start_pos+500]
+                    
+                    # Count TOC indicators in snippet
+                    dots_in_snippet = snippet.count('..')
+                    lines_in_snippet = snippet.split('\n')
+                    short_lines = sum(1 for line in lines_in_snippet if len(line.strip()) < 40)
+                    
+                    # If still looks like TOC, skip more
+                    if dots_in_snippet > 5 or short_lines > len(lines_in_snippet) * 0.6:
+                        print(f"  AI position {start_pos:,} still looks like TOC, skipping more...")
+                        
+                        # Find next paragraph marker after AI position
+                        search_from = start_pos + 1000
+                        remaining = raw_text[search_from:]
+                        
+                        # Look for paragraph with full sentences
+                        for i in range(0, min(10000, len(remaining)), 100):
+                            chunk = remaining[i:i+500]
+                            
+                            # Check if this looks like narrative
+                            if chunk.count('.') >= 3 and chunk.count('..') == 0:
+                                # Found narrative!
+                                final_pos = search_from + i
+                                print(f"  Found narrative at character {final_pos:,}")
+                                return raw_text[final_pos:]
+                    
+                    # AI position looks good
                     print(f"  AI detected content at character {start_pos:,}")
                     return raw_text[start_pos:]
                 else:
@@ -180,7 +215,6 @@ Return ONLY the number. Nothing else."""
     
     # Fallback to brutal skip
     return brutal_header_skip(raw_text)
-
 
 def brutal_header_skip(text: str) -> str:
     """
