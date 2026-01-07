@@ -216,7 +216,7 @@ def create_full_script(
     Create a complete video script with intro, document, comparisons, and outro
     """
     
-    from scripts.document_fetcher import split_text_for_duration
+    from scripts.document_scraper import split_text_for_duration
     
     print("  Generating curator introduction...")
     intro = generate_curator_intro(document_metadata, document_type, groq_api_key)
