@@ -13,7 +13,6 @@ from typing import Optional, Dict, List
 
 # Configuration
 INTERNET_ARCHIVE_API = "https://archive.org/advancedsearch.php"
-WIKISOURCE_API = "https://en.wikisource.org/w/api.php"
 
 # Document type configurations
 DOCUMENT_TYPES = {
@@ -23,7 +22,7 @@ DOCUMENT_TYPES = {
         "collections": ["americana", "naval", "maritime"]
     },
     "patent": {
-        "search_terms": ["patent", "invention", "patent drawing"],
+        "search_terms": ["patent", "invention", "patent drawing", "patent specification"],
         "date_range": "1790-1930",
         "collections": ["patents", "americana"]
     },
@@ -55,17 +54,7 @@ def search_internet_archive(
     document_type: str = "maritime_log",
     max_results: int = 10
 ) -> List[Dict]:
-    """
-    Search Internet Archive for documents
-    
-    Args:
-        query: Additional search terms
-        document_type: Type of document to search for
-        max_results: Maximum number of results
-    
-    Returns:
-        List of document metadata dictionaries
-    """
+    """Search Internet Archive for documents"""
     
     config = DOCUMENT_TYPES.get(document_type, DOCUMENT_TYPES["maritime_log"])
     
@@ -105,130 +94,86 @@ def search_internet_archive(
 
 
 def get_document_text(archive_id: str) -> Optional[str]:
-    """
-    Fetch full text of a document from Internet Archive
+    """Fetch full text of a document from Internet Archive"""
     
-    Args:
-        archive_id: Internet Archive identifier
+    # Try multiple text formats
+    formats = [f"{archive_id}_djvu.txt", f"{archive_id}_text.txt", f"{archive_id}.txt"]
     
-    Returns:
-        Document text or None if not available
-    """
-    
-    # Try to get the text file directly
-    text_url = f"https://archive.org/download/{archive_id}/{archive_id}_djvu.txt"
-    
-    try:
-        print(f"  Fetching document text: {archive_id}")
-        response = requests.get(text_url, timeout=60)
-        
-        if response.status_code == 200:
-            text = response.text
-            print(f"  Retrieved {len(text)} characters")
-            return text
-        else:
-            # Try alternative format
-            alt_url = f"https://archive.org/stream/{archive_id}/{archive_id}_djvu.txt"
-            response = requests.get(alt_url, timeout=60)
+    for fmt in formats:
+        text_url = f"https://archive.org/download/{archive_id}/{fmt}"
+        try:
+            print(f"  Fetching text: {fmt}")
+            response = requests.get(text_url, timeout=30)
             
             if response.status_code == 200:
-                return response.text
-            else:
-                print(f"  Text not available for {archive_id}")
-                return None
-                
-    except Exception as e:
-        print(f"  Error fetching text: {e}")
-        return None
+                text = response.text
+                # Filter out accidental HTML responses
+                if "<html" in text[:100].lower():
+                    continue
+                print(f"  Retrieved {len(text)} characters")
+                return text
+        except Exception as e:
+            continue
+            
+    print(f"  Text not available for {archive_id}")
+    return None
 
 
 def get_document_images(archive_id: str, max_images: int = 10) -> List[str]:
-    """
-    Get image URLs for document pages
-    
-    Args:
-        archive_id: Internet Archive identifier
-        max_images: Maximum number of images to return
-    
-    Returns:
-        List of image URLs
-    """
-    
-    # Internet Archive page image URL pattern
-    base_url = f"https://archive.org/download/{archive_id}/page"
+    """Get image URLs for document pages"""
     
     image_urls = []
     
-    # Try to get page images
+    # 1. Always add the thumbnail/cover
+    image_urls.append(f"https://archive.org/services/img/{archive_id}")
+    
+    # 2. Try standard page patterns
+    # We generate potential URLs but rely on visual_generator to handle 404s
+    # This prevents the scraper from being too slow checking every image
+    base_url = f"https://archive.org/download/{archive_id}"
+    
     for i in range(1, max_images + 1):
-        # Common page naming patterns
-        patterns = [
-            f"n{i:04d}.jpg",
-            f"n{i:03d}.jpg", 
-            f"page{i:04d}.jpg",
-            f"page{i:03d}.jpg"
-        ]
+        # Pattern 1: Simple n1.jpg
+        image_urls.append(f"{base_url}/page/n{i}.jpg")
         
-        for pattern in patterns:
-            url = f"https://archive.org/download/{archive_id}/{archive_id}_{pattern}"
-            try:
-                # Quick head request to check if exists
-                resp = requests.head(url, timeout=5)
-                if resp.status_code == 200:
-                    image_urls.append(url)
-                    break
-            except:
-                continue
+        # Pattern 2: Padded numbers
+        pad = str(i).zfill(4)
+        image_urls.append(f"{base_url}/{archive_id}_jp2/page_{pad}.jpg")
         
-        if len(image_urls) >= max_images:
-            break
-    
-    # Fallback: Use the item thumbnail/preview
-    if not image_urls:
-        thumbnail = f"https://archive.org/services/img/{archive_id}"
-        image_urls.append(thumbnail)
-    
-    print(f"  Found {len(image_urls)} document images")
     return image_urls
 
 
 def clean_document_text(raw_text: str) -> str:
-    """
-    Clean OCR text from historical documents
-    
-    Args:
-        raw_text: Raw OCR text
-    
-    Returns:
-        Cleaned text suitable for narration
-    """
+    """Clean OCR text from historical documents - BUG FIXED VERSION"""
     
     if not raw_text:
         return ""
     
     text = raw_text
     
-    # Remove common OCR artifacts
+    # Define fixes: (Pattern, Replacement, Flags [Optional])
     ocr_fixes = [
-        (r'\n{3,}', '\n\n'),           # Multiple newlines to double
-        (r'[ \t]+', ' '),               # Multiple spaces to single
-        (r'-\n', ''),                   # Hyphenated line breaks
-        (r'\n([a-z])', r' \1'),         # Join broken sentences
-        (r'[|]', 'I'),                  # Common OCR error: | for I
-        (r'(?<=[a-z])0(?=[a-z])', 'o'), # 0 for o in words
-        (r'(?<=[a-z])1(?=[a-z])', 'l'), # 1 for l in words
-        (r'["""]', '"'),                # Normalize quotes
-        (r"[''']", "'"),                # Normalize apostrophes
-        (r'(?<=[.!?])\n(?=[A-Z])', ' '), # Join sentences across lines
-        (r'\[.*?\]', ''),               # Remove editorial notes [sic] etc
+        (r'\n{3,}', '\n\n', 0),           # Multiple newlines to double
+        (r'[ \t]+', ' ', 0),               # Multiple spaces to single
+        (r'-\n', '', 0),                   # Hyphenated line breaks
+        (r'\n([a-z])', r' \1', 0),         # Join broken sentences
+        (r'[|]', 'I', 0),                  # Common OCR error: | for I
+        (r'(?<=[a-z])0(?=[a-z])', 'o', 0), # 0 for o in words
+        (r'(?<=[a-z])1(?=[a-z])', 'l', 0), # 1 for l in words
+        (r'["""]', '"', 0),                # Normalize quotes
+        (r"[''']", "'", 0),                # Normalize apostrophes
+        (r'(?<=[.!?])\n(?=[A-Z])', ' ', 0), # Join sentences across lines
+        (r'\[.*?\]', '', 0),               # Remove editorial notes [sic] etc
         (r'\d{1,3}\s*$', '', re.MULTILINE), # Page numbers at end of lines
     ]
     
-    for pattern, replacement in ocr_fixes:
-        if len(ocr_fixes[0]) == 2:
-            text = re.sub(pattern, replacement, text)
-        else:
-            text = re.sub(pattern, replacement, text, flags=ocr_fixes[0][2] if len(ocr_fixes[0]) > 2 else 0)
+    # Iterate safely handling optional flags
+    for item in ocr_fixes:
+        pattern = item[0]
+        replacement = item[1]
+        flags = item[2] if len(item) > 2 else 0
+        
+        text = re.sub(pattern, replacement, text, flags=flags)
     
     # Remove very short lines (likely headers/footers)
     lines = text.split('\n')
@@ -246,23 +191,11 @@ def clean_document_text(raw_text: str) -> str:
     for old, new in old_spellings:
         text = re.sub(old, new, text, flags=re.IGNORECASE)
     
-    # Final cleanup
-    text = text.strip()
-    
-    return text
+    return text.strip()
 
 
 def extract_document_metadata(text: str, archive_metadata: Dict) -> Dict:
-    """
-    Extract key metadata from document
-    
-    Args:
-        text: Document text
-        archive_metadata: Metadata from Internet Archive
-    
-    Returns:
-        Structured metadata dictionary
-    """
+    """Extract key metadata from document"""
     
     metadata = {
         "archive_id": archive_metadata.get("identifier", "unknown"),
@@ -272,8 +205,7 @@ def extract_document_metadata(text: str, archive_metadata: Dict) -> Dict:
         "description": archive_metadata.get("description", ""),
         "subjects": archive_metadata.get("subject", []),
         "word_count": len(text.split()) if text else 0,
-        "char_count": len(text) if text else 0,
-        "estimated_duration_minutes": round(len(text.split()) / 130) if text else 0  # ~130 wpm for slow reading
+        "year": None
     }
     
     # Try to extract year
@@ -281,24 +213,12 @@ def extract_document_metadata(text: str, archive_metadata: Dict) -> Dict:
     year_match = re.search(r'\b(1[0-9]{3})\b', date_str)
     if year_match:
         metadata["year"] = int(year_match.group(1))
-    else:
-        metadata["year"] = None
     
     return metadata
 
 
 def split_text_for_duration(text: str, target_minutes: int, words_per_minute: int = 120) -> str:
-    """
-    Extract a portion of text for target duration
-    
-    Args:
-        text: Full document text
-        target_minutes: Target video duration in minutes
-        words_per_minute: Reading speed (slower for sleep content)
-    
-    Returns:
-        Text portion for target duration
-    """
+    """Extract a portion of text for target duration"""
     
     target_words = target_minutes * words_per_minute
     words = text.split()
@@ -319,20 +239,10 @@ def split_text_for_duration(text: str, target_minutes: int, words_per_minute: in
 
 def select_random_document(
     document_type: str = None,
-    min_words: int = 1000,
+    min_words: int = 500,
     max_words: int = 50000
 ) -> Optional[Dict]:
-    """
-    Select a random document suitable for video creation
-    
-    Args:
-        document_type: Type of document (None for random)
-        min_words: Minimum word count
-        max_words: Maximum word count
-    
-    Returns:
-        Document data dictionary or None
-    """
+    """Select a random document suitable for video creation"""
     
     # Random document type if not specified
     if not document_type:
@@ -379,7 +289,7 @@ def select_random_document(
         metadata = extract_document_metadata(cleaned_text, doc)
         
         print(f"  ✓ Selected: {metadata['title'][:50]}...")
-        print(f"    Words: {word_count}, Est. duration: {metadata['estimated_duration_minutes']} min")
+        print(f"    Words: {word_count}, Year: {metadata['year']}")
         
         return {
             "metadata": metadata,
@@ -390,15 +300,3 @@ def select_random_document(
     
     print("  No suitable documents found after trying 10")
     return None
-
-
-# For testing
-if __name__ == "__main__":
-    print("Testing document scraper...")
-    doc = select_random_document("maritime_log", min_words=500)
-    if doc:
-        print(f"\nDocument: {doc['metadata']['title']}")
-        print(f"Year: {doc['metadata']['year']}")
-        print(f"Words: {doc['metadata']['word_count']}")
-        print(f"Images: {len(doc['images'])}")
-        print(f"\nFirst 500 chars:\n{doc['text'][:500]}")
