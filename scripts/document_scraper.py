@@ -1,6 +1,6 @@
 """
 Document Scraper for The Bureaucratic Archivist
-Enhanced with strict quality validation and copyright safety
+Enhanced with strict quality validation, copyright safety, and new document types
 """
 
 import os
@@ -15,48 +15,91 @@ import string
 # Configuration
 INTERNET_ARCHIVE_API = "https://archive.org/advancedsearch.php"
 
-# Strict document type configurations (Pre-1928 only, narrative focus)
+# Enhanced document types (Pre-1928 only, bureaucratic focus)
 DOCUMENT_TYPES = {
-    "ship_log": {
-        "search_terms": [
-            "ship log narrative", 
-            "voyage journal", 
-            "captain's journal",
-            "maritime diary",
-            "sea voyage log"
-        ],
-        "date_range": "1700-1927",  # Pre-1928 for safety
-        "collections": ["americana", "naval", "maritime"],
-        "priority": "high",
-        "min_narrative_ratio": 0.6  # 60% should be narrative text
-    },
     "government_report": {
         "search_terms": [
             "annual report",
             "commission report", 
             "department report",
-            "official report"
+            "official report",
+            "bureau report"
         ],
-        "date_range": "1800-1927",  # Pre-1928 for safety
+        "date_range": "1800-1927",
         "collections": ["governmentpublications", "americana", "usfederalgovernmentpublications"],
         "priority": "high",
-        "exclude_terms": ["statistical", "census", "table"]  # Avoid number-heavy docs
+        "exclude_terms": ["statistical table", "census table"]
+    },
+    "postal_regulations": {
+        "search_terms": [
+            "postal laws and regulations",
+            "post office regulations",
+            "postal service rules",
+            "mail regulations"
+        ],
+        "date_range": "1800-1927",
+        "collections": ["governmentpublications", "usfederalgovernmentpublications"],
+        "priority": "high"
+    },
+    "civil_service": {
+        "search_terms": [
+            "civil service commission",
+            "civil service report",
+            "civil service examination",
+            "government employment"
+        ],
+        "date_range": "1850-1927",
+        "collections": ["governmentpublications", "usfederalgovernmentpublications"],
+        "priority": "high"
+    },
+    "style_manual": {
+        "search_terms": [
+            "government printing office style",
+            "GPO style manual",
+            "manual of style",
+            "printing office manual"
+        ],
+        "date_range": "1880-1927",
+        "collections": ["governmentpublications"],
+        "priority": "medium"
+    },
+    "city_ordinance": {
+        "search_terms": [
+            "city ordinance",
+            "municipal ordinance",
+            "town ordinance",
+            "city code"
+        ],
+        "date_range": "1800-1927",
+        "collections": ["americana", "governmentpublications"],
+        "priority": "high"
+    },
+    "court_record": {
+        "search_terms": [
+            "court proceedings",
+            "legal proceedings",
+            "supreme court",
+            "court decisions"
+        ],
+        "date_range": "1800-1927",
+        "collections": ["americana", "usfederalgovernmentpublications"],
+        "priority": "medium"
     }
 }
 
 # Quality thresholds (90%+ requirement)
 QUALITY_THRESHOLDS = {
-    "english_word_ratio": 0.90,      # 90% real English words
-    "ascii_ratio": 0.95,              # 95% normal ASCII characters
-    "avg_word_length": (3, 12),       # Words between 3-12 chars average
-    "sentence_structure": 0.85,       # 85% of text has proper sentences
-    "max_punctuation_ratio": 0.15     # No more than 15% punctuation
+    "english_word_ratio": 0.90,
+    "ascii_ratio": 0.95,
+    "avg_word_length": (3, 12),
+    "sentence_structure": 0.50,  # Relaxed for historical long sentences
+    "max_punctuation_ratio": 0.15
 }
 
 
 def search_internet_archive(
     query: str,
-    document_type: str = "ship_log",
+    document_type: str = "government_report",
     max_results: int = 20
 ) -> List[Dict]:
     """Search Internet Archive with strict safety filters"""
@@ -66,19 +109,15 @@ def search_internet_archive(
         print(f"  Unknown document type: {document_type}")
         return []
     
-    # Build search query
     search_term = random.choice(config["search_terms"])
     if query:
         search_term = f"{search_term} {query}"
     
-    # Add exclusions for government reports
     if "exclude_terms" in config:
         for term in config["exclude_terms"]:
             search_term += f" NOT {term}"
     
     year_range = config["date_range"]
-    
-    # Build query with collection filter for safety
     collections_filter = " OR ".join([f'collection:"{c}"' for c in config["collections"]])
     
     params = {
@@ -130,16 +169,86 @@ def get_document_text(archive_id: str) -> Optional[str]:
     return None
 
 
+def skip_document_headers(text: str) -> str:
+    """
+    Skip Internet Archive metadata, table of contents, and decorative title pages
+    Finds where actual narrative content begins
+    """
+    
+    if len(text) < 10000:
+        return text  # Too short to have meaningful headers
+    
+    # Strategy: Look for first substantial paragraph after char 3000
+    potential_starts = []
+    
+    for i in range(3000, min(15000, len(text) - 1000)):
+        # Look for paragraph start (double newline + capital)
+        if text[i:i+2] == '\n\n' and i+2 < len(text) and text[i+2].isupper():
+            next_section = text[i:i+300]
+            
+            # Count sentences (periods)
+            periods = next_section.count('.')
+            
+            # Count actual words (not symbols)
+            words = re.findall(r'\b[a-zA-Z]{3,}\b', next_section)
+            
+            # If it has sentences and real words, likely content
+            if periods >= 2 and len(words) >= 20:
+                potential_starts.append(i)
+                if len(potential_starts) >= 3:
+                    break
+    
+    # Use first good start, or fallback to char 5000
+    if potential_starts:
+        start = potential_starts[0]
+        print(f"  Skipped {start:,} header characters")
+        return text[start:]
+    else:
+        print(f"  Skipped 5,000 header characters (fallback)")
+        return text[5000:] if len(text) > 5000 else text
+
+
+def clean_document_text(raw_text: str) -> str:
+    """Clean OCR text and skip headers"""
+    
+    if not raw_text:
+        return ""
+    
+    # STEP 1: Skip headers/metadata
+    text = skip_document_headers(raw_text)
+    
+    # STEP 2: Clean OCR artifacts
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'-\n', '', text)
+    text = re.sub(r'\n([a-z])', r' \1', text)
+    text = text.replace('|', 'I')
+    text = re.sub(r'["""]', '"', text)
+    text = re.sub(r"[''']", "'", text)
+    text = re.sub(r'\[.*?\]', '', text)
+    text = re.sub(r'\d{1,3}\s*$', '', text, flags=re.MULTILINE)
+    
+    # STEP 3: Remove short lines
+    lines = text.split('\n')
+    lines = [line for line in lines if len(line.strip()) > 20 or line.strip() == '']
+    text = '\n'.join(lines)
+    
+    # STEP 4: Normalize old spellings
+    old_spellings = [
+        (r'\bto-day\b', 'today'),
+        (r'\bto-morrow\b', 'tomorrow'),
+        (r'\bto-night\b', 'tonight'),
+        (r'\b&\b', 'and'),
+    ]
+    
+    for old, new in old_spellings:
+        text = re.sub(old, new, text, flags=re.IGNORECASE)
+    
+    return text.strip()
+
+
 def validate_text_quality(text: str, document_type: str = None) -> Dict:
-    """
-    Strict quality validation (90%+ threshold)
-    Returns: {
-        "passed": bool,
-        "score": float,
-        "details": dict,
-        "reason": str
-    }
-    """
+    """Strict quality validation (90%+ threshold)"""
     
     if not text or len(text) < 500:
         return {
@@ -149,14 +258,12 @@ def validate_text_quality(text: str, document_type: str = None) -> Dict:
             "reason": "Text too short (< 500 chars)"
         }
     
-    # Load English word list (basic check)
     common_words = set([
         'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i',
         'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at',
         'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she',
         'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what',
-        'ship', 'vessel', 'captain', 'voyage', 'sea', 'wind', 'day', 'port',
-        'report', 'year', 'department', 'committee', 'act', 'law', 'state'
+        'government', 'department', 'report', 'year', 'state', 'city', 'law'
     ])
     
     words = re.findall(r'\b[a-zA-Z]+\b', text.lower())
@@ -170,28 +277,22 @@ def validate_text_quality(text: str, document_type: str = None) -> Dict:
             "reason": "Too few words extracted (< 100)"
         }
     
-    # 1. English Word Ratio
+    # Quality checks
     english_words = sum(1 for w in words if w in common_words or len(w) > 2)
     english_ratio = english_words / total_words if total_words > 0 else 0
     
-    # 2. ASCII Character Ratio
     ascii_chars = sum(1 for c in text if ord(c) < 128)
     ascii_ratio = ascii_chars / len(text)
     
-    # 3. Average Word Length
     avg_word_len = sum(len(w) for w in words) / len(words) if words else 0
     word_len_ok = QUALITY_THRESHOLDS["avg_word_length"][0] <= avg_word_len <= QUALITY_THRESHOLDS["avg_word_length"][1]
     
-    # 4. Sentence Structure (periods, capital letters)
     sentences = text.count('.')
-    capitals = sum(1 for c in text if c.isupper())
-    sentence_ratio = min(sentences / (total_words / 15), 1.0)  # ~15 words per sentence
+    sentence_ratio = min(sentences / (total_words / 15), 1.0)
     
-    # 5. Punctuation Ratio (detect excessive symbols)
     punctuation_count = sum(1 for c in text if c in string.punctuation)
     punct_ratio = punctuation_count / len(text)
     
-    # Calculate overall score
     scores = {
         "english_ratio": english_ratio,
         "ascii_ratio": ascii_ratio,
@@ -202,7 +303,6 @@ def validate_text_quality(text: str, document_type: str = None) -> Dict:
     
     overall_score = sum(scores.values()) / len(scores)
     
-    # Check against thresholds
     passed = (
         english_ratio >= QUALITY_THRESHOLDS["english_word_ratio"] and
         ascii_ratio >= QUALITY_THRESHOLDS["ascii_ratio"] and
@@ -226,7 +326,7 @@ def validate_text_quality(text: str, document_type: str = None) -> Dict:
         if english_ratio < QUALITY_THRESHOLDS["english_word_ratio"]:
             failures.append(f"Low English ratio ({english_ratio:.1%})")
         if ascii_ratio < QUALITY_THRESHOLDS["ascii_ratio"]:
-            failures.append(f"Too many non-ASCII chars ({ascii_ratio:.1%})")
+            failures.append(f"Too many non-ASCII ({ascii_ratio:.1%})")
         if not word_len_ok:
             failures.append(f"Unusual word length ({avg_word_len:.1f})")
         if sentence_ratio < QUALITY_THRESHOLDS["sentence_structure"]:
@@ -244,26 +344,16 @@ def validate_text_quality(text: str, document_type: str = None) -> Dict:
 
 
 def verify_copyright_safety(metadata: Dict) -> Dict:
-    """
-    Verify document is safely in public domain
-    Returns: {
-        "safe": bool,
-        "reason": str,
-        "confidence": str
-    }
-    """
+    """Verify document is safely in public domain"""
     
-    archive_id = metadata.get("identifier", "")
     date_str = str(metadata.get("date", ""))
     collections = metadata.get("collection", [])
     if isinstance(collections, str):
         collections = [collections]
     
-    # Extract year
     year_match = re.search(r'\b(1[0-9]{3})\b', date_str)
     year = int(year_match.group(1)) if year_match else None
     
-    # Check 1: Year must be pre-1928
     if not year or year >= 1928:
         return {
             "safe": False,
@@ -271,7 +361,6 @@ def verify_copyright_safety(metadata: Dict) -> Dict:
             "confidence": "low"
         }
     
-    # Check 2: Must be in trusted government collections
     trusted_collections = [
         "governmentpublications",
         "usfederalgovernmentpublications", 
@@ -296,117 +385,6 @@ def verify_copyright_safety(metadata: Dict) -> Dict:
     }
 
 
-def check_narrative_content(text: str, document_type: str) -> bool:
-    """Check if document has enough narrative content (for ship logs)"""
-    
-    if document_type != "ship_log":
-        return True  # Only check ship logs
-    
-    # Look for narrative indicators
-    narrative_indicators = [
-        r'\b(sailed|departed|arrived|encountered|observed|sighted)\b',
-        r'\b(weather|wind|sea|waves|crew|captain)\b',
-        r'\b(today|yesterday|morning|evening|night)\b',
-        r'\b(we|our|the ship|vessel)\b'
-    ]
-    
-    narrative_matches = sum(len(re.findall(pattern, text, re.IGNORECASE)) for pattern in narrative_indicators)
-    total_words = len(text.split())
-    
-    narrative_ratio = narrative_matches / total_words if total_words > 0 else 0
-    
-    # Require 60% narrative content
-    min_ratio = DOCUMENT_TYPES[document_type].get("min_narrative_ratio", 0.6)
-    
-    return narrative_ratio >= min_ratio
-
-
-def clean_document_text(raw_text: str) -> str:
-    """
-    Clean OCR text from historical documents
-    Skips headers, metadata, and table of contents
-    """
-    
-    if not raw_text:
-        return ""
-    
-    text = raw_text
-    
-    # STEP 1: Skip headers and front matter (first 5000 chars usually metadata/TOC)
-    # Look for where actual narrative content starts
-    if len(text) > 10000:
-        # Find a good starting point after metadata
-        # Look for paragraph breaks indicating end of TOC
-        potential_starts = []
-        
-        # Strategy 1: Find first occurrence of multi-line paragraph after char 3000
-        for i in range(3000, min(15000, len(text) - 1000)):
-            # Look for double newline followed by capital letter (start of paragraph)
-            if text[i:i+2] == '\n\n' and i+2 < len(text) and text[i+2].isupper():
-                # Check if this looks like narrative (not a heading)
-                next_section = text[i:i+200]
-                # Count periods (narrative has sentences)
-                periods = next_section.count('.')
-                if periods >= 2:  # At least 2 sentences
-                    potential_starts.append(i)
-                    if len(potential_starts) >= 3:  # Found enough candidates
-                        break
-        
-        # Use the first good starting point, or fallback to char 5000
-        if potential_starts:
-            text = text[potential_starts[0]:]
-            print(f"  Skipped {potential_starts[0]:,} header characters")
-        else:
-            # Fallback: just skip first 5000 chars
-            text = text[5000:]
-            print(f"  Skipped 5,000 header characters (fallback)")
-    
-    # STEP 2: Apply cleaning
-    
-    # Remove multiple newlines
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    
-    # Remove multiple spaces
-    text = re.sub(r'[ \t]+', ' ', text)
-    
-    # Join hyphenated words across lines
-    text = re.sub(r'-\n', '', text)
-    
-    # Join broken sentences
-    text = re.sub(r'\n([a-z])', r' \1', text)
-    
-    # Fix common OCR errors
-    text = text.replace('|', 'I')
-    
-    # Fix quotes
-    text = re.sub(r'["""]', '"', text)
-    text = re.sub(r"[''']", "'", text)
-    
-    # Remove brackets like [sic]
-    text = re.sub(r'\[.*?\]', '', text)
-    
-    # Remove page numbers at end of lines
-    text = re.sub(r'\d{1,3}\s*$', '', text, flags=re.MULTILINE)
-    
-    # STEP 3: Remove very short lines (likely headers/footers)
-    lines = text.split('\n')
-    lines = [line for line in lines if len(line.strip()) > 20 or line.strip() == '']
-    text = '\n'.join(lines)
-    
-    # STEP 4: Normalize old spellings
-    old_spellings = [
-        (r'\bto-day\b', 'today'),
-        (r'\bto-morrow\b', 'tomorrow'),
-        (r'\bto-night\b', 'tonight'),
-        (r'\b&\b', 'and'),
-    ]
-    
-    for old, new in old_spellings:
-        text = re.sub(old, new, text, flags=re.IGNORECASE)
-    
-    return text.strip()
-
-
 def get_document_images(archive_id: str, max_images: int = 10) -> List[str]:
     """Get image URLs for document pages"""
     
@@ -424,7 +402,7 @@ def get_document_images(archive_id: str, max_images: int = 10) -> List[str]:
 
 
 def extract_document_metadata(text: str, archive_metadata: Dict) -> Dict:
-    """Extract metadata - same as before"""
+    """Extract metadata"""
     
     metadata = {
         "archive_id": archive_metadata.get("identifier", "unknown"),
@@ -468,10 +446,7 @@ def select_random_document(
     min_words: int = 800,
     max_words: int = 50000
 ) -> Optional[Dict]:
-    """
-    Select random document with STRICT quality & copyright validation
-    Tries up to 10 documents, returns None if all fail
-    """
+    """Select random document with STRICT quality & copyright validation"""
     
     if not document_type:
         document_type = random.choice(list(DOCUMENT_TYPES.keys()))
@@ -505,7 +480,6 @@ def select_random_document(
         
         print(f"\n  📄 Attempt {attempts}/{max_attempts}: {doc.get('title', 'Untitled')[:50]}...")
         
-        # Check copyright safety FIRST (before downloading)
         copyright_check = verify_copyright_safety(doc)
         if not copyright_check["safe"]:
             print(f"     ❌ Copyright: {copyright_check['reason']}")
@@ -513,43 +487,27 @@ def select_random_document(
         else:
             print(f"     ✅ Copyright: {copyright_check['reason']}")
         
-        # Get text
         text = get_document_text(archive_id)
         if not text:
             print(f"     ❌ No text available")
             continue
         
-        # Clean text
         cleaned_text = clean_document_text(text)
         word_count = len(cleaned_text.split())
         
-        # Check word count
         if word_count < min_words:
             print(f"     ❌ Too short: {word_count} words (need {min_words}+)")
             continue
         
-        # Validate quality
         quality = validate_text_quality(cleaned_text, document_type)
         print(f"     📊 Quality score: {quality['score']:.1%}")
         
         if not quality["passed"]:
             print(f"     ❌ Quality: {quality['reason']}")
-            for key, value in quality["details"].items():
-                print(f"        - {key}: {value}")
             continue
         else:
             print(f"     ✅ Quality: {quality['reason']}")
         
-        # Check narrative content (ship logs only)
-        if document_type == "ship_log":
-            has_narrative = check_narrative_content(cleaned_text, document_type)
-            if not has_narrative:
-                print(f"     ❌ Insufficient narrative content")
-                continue
-            else:
-                print(f"     ✅ Good narrative content")
-        
-        # All checks passed!
         images = get_document_images(archive_id, max_images=15)
         metadata = extract_document_metadata(cleaned_text, doc)
         
@@ -568,7 +526,6 @@ def select_random_document(
             "quality_details": quality["details"]
         }
     
-    # All attempts failed
     print(f"\n  ❌ FAILED: Tried {attempts} documents, none met quality standards")
     print(f"     Suggestion: Try a different document type or run again")
     

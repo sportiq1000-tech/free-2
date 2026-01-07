@@ -1,6 +1,7 @@
 """
 Voice Generator for The Bureaucratic Archivist
 Creates tired, monotone, professional narration
+Optimized for sleep/relaxation content
 """
 
 import edge_tts
@@ -9,47 +10,63 @@ import random
 
 class VoiceGenerator:
     def __init__(self):
-        # ONLY use deep, calm, "tired professional" voices
-        self.voices = [
-            'en-GB-RyanNeural',          # British, professional (BEST)
-            'en-US-GuyNeural',           # American, flat
-            'en-AU-WilliamNeural',       # Australian, calm
-            'en-US-ChristopherNeural',   # American, deep
+        # ONLY bureaucratic voices (tested and approved)
+        self.voices = {
+            'main': 'en-US-ChristopherNeural',    # Best for main content
+            'intro': 'en-AU-WilliamNeural',        # Good for intros
+        }
+        
+        # All approved voices for variety
+        self.all_voices = [
+            'en-US-ChristopherNeural',   # Deep, authoritative (PRIMARY)
+            'en-AU-WilliamNeural',       # Calm, professional
         ]
         
-        # Remove upbeat voices:
-        # ❌ en-IE-ConnorNeural (too cheerful)
-        # ❌ en-GB-ThomasNeural (too young)
-        
         self.voice_history = []
+        
+        # Locked settings for bureaucratic tone
+        self.bureaucratic_settings = {
+            'rate_min': -22,
+            'rate_max': -18,
+            'pitch_min': -8,
+            'pitch_max': -5,
+        }
     
-    def get_varied_settings(self):
+    def get_varied_settings(self, voice_type='main'):
         """
         Generate BUREAUCRATIC voice settings
-        - Slower than normal (tired)
+        - Slower than normal (tired government worker)
         - Lower pitch (aged, authoritative)
         - Consistent monotone
         """
         
-        # Select voice not used recently
-        available = [v for v in self.voices if v not in self.voice_history[-2:]]
-        voice = random.choice(available) if available else random.choice(self.voices)
+        # Select voice based on type
+        if voice_type == 'intro':
+            voice = self.voices['intro']
+        else:
+            voice = self.voices['main']
         
-        # Track usage
-        self.voice_history.append(voice)
-        if len(self.voice_history) > 10:
-            self.voice_history.pop(0)
-        
-        # BUREAUCRATIC settings (slower, deeper, flatter)
-        rate_val = random.randint(-25, -18)      # Much slower (was -18 to -8)
-        pitch_val = random.randint(-8, -3)        # Deeper (was -6 to +3)
+        # Generate values within bureaucratic range
+        rate_val = random.randint(
+            self.bureaucratic_settings['rate_min'],
+            self.bureaucratic_settings['rate_max']
+        )
+        pitch_val = random.randint(
+            self.bureaucratic_settings['pitch_min'],
+            self.bureaucratic_settings['pitch_max']
+        )
         volume_val = random.randint(-2, 2)
+        
+        # Format with proper signs (FIXED)
+        rate_str = f"{rate_val}%" if rate_val < 0 else f"+{rate_val}%"
+        pitch_str = f"{pitch_val}Hz" if pitch_val < 0 else f"+{pitch_val}Hz"
+        volume_str = f"{volume_val}%" if volume_val < 0 else f"+{volume_val}%"
         
         settings = {
             'voice': voice,
-            'rate': f"{rate_val}%",
-            'pitch': f"{pitch_val}Hz",
-            'volume': f"+{volume_val}%" if volume_val >= 0 else f"{volume_val}%"
+            'rate': rate_str,
+            'pitch': pitch_str,
+            'volume': volume_str
         }
         
         return settings
@@ -68,7 +85,7 @@ class VoiceGenerator:
         await communicate.save(output_path)
     
     def generate_audio(self, text, output_path, settings=None):
-        """Synchronous wrapper"""
+        """Synchronous wrapper for audio generation"""
         
         if settings is None:
             settings = self.get_varied_settings()
@@ -77,15 +94,19 @@ class VoiceGenerator:
         print(f"  Voice: {settings['voice']}")
         print(f"  Rate: {settings['rate']} (slow, tired)")
         print(f"  Pitch: {settings['pitch']} (deep, authoritative)")
+        print(f"  Volume: {settings['volume']}")
         
+        # Run async generation
         asyncio.run(self._generate_audio_async(text, output_path, settings))
         
         return settings
     
     def process_pause_markers(self, script_text):
-        """Handle pause markers from script"""
+        """
+        Handle pause markers from scriptenhancer
+        Add longer pauses for bureaucratic effect
+        """
         
-        # Add longer pauses for bureaucratic effect
         processed = script_text.replace('[Pause - 3 seconds]', '...... ')
         processed = processed.replace('[Pause - 2 seconds]', '.... ')
         processed = processed.replace('[Pause]', '... ')
@@ -93,7 +114,7 @@ class VoiceGenerator:
         return processed
     
     def generate_from_script(self, script_dict, output_path, settings=None):
-        """Generate audio from script data"""
+        """Generate audio from scriptenhancer output"""
         
         full_script = script_dict.get('full_script', '')
         processed = self.process_pause_markers(full_script)
