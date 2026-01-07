@@ -1,6 +1,7 @@
 """
 Document Scraper for The Bureaucratic Archivist
-AI-powered header detection + strict quality validation
+AI-powered header detection + modern language detection
+Now using GPT-OSS-120B for better accuracy
 """
 
 import os
@@ -18,6 +19,18 @@ GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 
 # Document types (Pre-1928 only, bureaucratic focus)
 DOCUMENT_TYPES = {
+    "postal_regulations": {
+        "search_terms": [
+            "postal laws and regulations",
+            "post office regulations",
+            "postal service rules",
+            "mail regulations",
+            "postmaster general report"
+        ],
+        "date_range": "1800-1927",
+        "collections": ["governmentpublications", "usfederalgovernmentpublications"],
+        "priority": "highest"  # Cleanest content
+    },
     "government_report": {
         "search_terms": [
             "annual report",
@@ -30,17 +43,6 @@ DOCUMENT_TYPES = {
         "collections": ["governmentpublications", "americana", "usfederalgovernmentpublications"],
         "priority": "high",
         "exclude_terms": ["statistical table", "census table"]
-    },
-    "postal_regulations": {
-        "search_terms": [
-            "postal laws and regulations",
-            "post office regulations",
-            "postal service rules",
-            "mail regulations"
-        ],
-        "date_range": "1800-1927",
-        "collections": ["governmentpublications", "usfederalgovernmentpublications"],
-        "priority": "high"
     },
     "civil_service": {
         "search_terms": [
@@ -98,9 +100,68 @@ QUALITY_THRESHOLDS = {
 }
 
 
+def check_for_modern_language(text: str, document_year: int = None) -> Dict:
+    """
+    Detect modern editorial language that shouldn't be in historical docs
+    Returns: {"is_historical": bool, "reason": str, "confidence": float}
+    """
+    
+    # Check first 2000 characters (where modern prefaces appear)
+    sample = text[:2000].lower()
+    
+    # Modern phrases that indicate editorial content
+    modern_indicators = [
+        'pre-war',
+        'post-war',
+        'world war',
+        'sir arthur',
+        'it became evident',
+        'after some years',
+        'cardboard boxes',
+        'electrotyped',
+        'the committee has been',
+        'kindly supplied',
+        'impossible to procure',
+        'from which they were reprinted',
+        'this publication',
+        'this edition',
+        'as we in those',
+        'peaceful pre-war days'
+    ]
+    
+    # Count modern indicators
+    modern_count = sum(1 for phrase in modern_indicators if phrase in sample)
+    
+    # Anachronisms (things that shouldn't exist before document year)
+    if document_year and document_year < 1914:
+        # References to WWI (1914-1918)
+        if 'war' in sample and 'pre-war' in sample:
+            modern_count += 2
+    
+    # Decision logic
+    if modern_count >= 3:
+        return {
+            "is_historical": False,
+            "reason": f"Contains {modern_count} modern editorial phrases",
+            "confidence": 0.9
+        }
+    elif modern_count >= 1:
+        return {
+            "is_historical": False,
+            "reason": f"Contains {modern_count} modern editorial phrase(s)",
+            "confidence": 0.7
+        }
+    else:
+        return {
+            "is_historical": True,
+            "reason": "No modern language detected",
+            "confidence": 0.95
+        }
+
+
 def ai_skip_headers(raw_text: str, groq_api_key: str = None) -> str:
     """
-    AI-powered header detection using Groq/Llama
+    AI-powered header detection using GPT-OSS-120B
     Finds EXACTLY where original historical content starts
     Skips: Metadata, TOC, index, AND modern editorial prefaces
     """
@@ -112,45 +173,40 @@ def ai_skip_headers(raw_text: str, groq_api_key: str = None) -> str:
         return brutal_header_skip(raw_text)
     
     # Take large sample (modern prefaces can be 3-5 pages)
-    sample = raw_text[:min(20000, len(raw_text))]
+    sample = raw_text[:min(25000, len(raw_text))]
     
-    prompt = f"""You are an expert archival processor.
+    prompt = f"""You are an expert archival processor specializing in pre-1928 US government documents.
 
-Here is the beginning of a scanned historical document (pre-1928):
+Here is the beginning of a scanned historical document:
 
 \"\"\"{sample}\"\"\"
 
-Your job: Find where the ORIGINAL HISTORICAL TEXT begins.
+Your job: Find where the ORIGINAL HISTORICAL TEXT begins (written in the 1800s-1920s).
 
-SKIP ALL OF THESE:
+SKIP ALL OF THESE MODERN ADDITIONS:
 - Google Books / Internet Archive metadata
 - "Digitized by", library stamps, URLs
-- Title pages with symbols/decorative text
-- **TABLE OF CONTENTS** - lines like "Chapter 1 ..... 23"
-- **INDEX pages**
-- **MODERN PREFACES** - text about "reprinting", "this edition", "the Committee"
-- **EDITOR'S NOTES** - explanations of the publication process
-- **REPRINT INTRODUCTIONS** - anything written ABOUT the document
+- Title pages with decorative symbols
+- TABLE OF CONTENTS (lines like "Chapter 1 ..... 23")
+- INDEX pages
+- MODERN PREFACES about reprinting/publishing
+- EDITOR'S NOTES from the 1900s-2000s
+- Text mentioning "pre-war", "post-war", "Sir Arthur", "cardboard boxes"
+- Text about "electrotyping", "plates kindly supplied", "impossible to procure"
 
-ESPECIALLY SKIP text mentioning:
-- "reprinted", "this publication", "the Committee has been compelled"
-- "plates kindly supplied", "electrotyped", "illustrations from another source"
-- "it was found impossible to procure"
-- Any text that is ABOUT the document rather than BY the original author
+LOOK FOR the FIRST LINE written by the ORIGINAL government author (1800s-1920s).
 
-LOOK FOR the FIRST LINE written by the ORIGINAL 1896 author (not modern editors).
+GOOD (original bureaucratic text):
+"POSTAL LAWS AND REGULATIONS. Section 1. The Postmaster General..."
+"REPORT OF THE POSTMASTER GENERAL. During the fiscal year..."
+"CHAPTER I. CLASSIFICATION OF MAIL MATTER. All mailable matter..."
 
-BAD (skip these - modern editorial text):
-"the publication, by the State, of the two volumes entitled..."
-"The Committee has been compelled to provide the illustrations..."
+BAD (skip these):
+"the publication, by the State, of the two volumes..."
+"pre-war days were in the habit..."
 "Agent, county- ..... 23"
 
-GOOD (original historical text):
-"The frontier forts were established in the year 1755..."
-"CHAPTER I. In the year 1755, during the French and Indian War..."
-"The following report presents the findings of the commission..."
-
-Return ONLY the character position where the ORIGINAL historical narrative begins.
+Return ONLY the character position (number) where ORIGINAL text begins.
 
 Return ONLY the number."""
 
@@ -162,12 +218,12 @@ Return ONLY the number."""
                 "Content-Type": "application/json"
             },
             json={
-                "model": "llama-3.3-70b-versatile",
+                "model": "openai/gpt-oss-120b",  # Using GPT-OSS-120B
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
                 "max_tokens": 10
             },
-            timeout=20
+            timeout=30
         )
         
         if response.status_code == 200:
@@ -177,10 +233,9 @@ Return ONLY the number."""
             if number_match:
                 start_pos = int(number_match.group())
                 
-                # Extended range (prefaces can be long)
-                if 100 <= start_pos <= 25000 and start_pos < len(raw_text):
+                if 100 <= start_pos <= 30000 and start_pos < len(raw_text):
                     
-                    # VERIFY: Check for editorial language in snippet
+                    # VERIFY: Check for editorial language
                     snippet = raw_text[start_pos:start_pos+800].lower()
                     
                     editorial_phrases = [
@@ -190,36 +245,37 @@ Return ONLY the number."""
                         'kindly supplied',
                         'electrotyped',
                         'impossible to procure',
-                        'from which they were reprinted'
+                        'pre-war',
+                        'cardboard boxes'
                     ]
                     
                     has_editorial = any(phrase in snippet for phrase in editorial_phrases)
                     
                     if has_editorial:
-                        print(f"  AI position {start_pos:,} still has editorial text, searching further...")
+                        print(f"  AI position {start_pos:,} has editorial text, searching further...")
                         
-                        # Look for chapter markers or section starts
+                        # Look for bureaucratic section markers
                         search_patterns = [
+                            r'SECTION\s+\d+',
                             r'CHAPTER\s+[IVX1]',
-                            r'INTRODUCTION\.',
+                            r'POSTAL\s+LAWS',
+                            r'REGULATIONS\s+OF',
                             r'REPORT\s+OF\s+THE',
-                            r'The\s+frontier\s+forts?\s+(?:were|was)',
-                            r'In\s+the\s+year\s+\d{4}'
+                            r'CLASSIFICATION\s+OF',
+                            r'The\s+Postmaster\s+General'
                         ]
                         
-                        search_from = start_pos + 500
-                        remaining = raw_text[search_from:search_from + 15000]
+                        search_from = start_pos + 1000
+                        remaining = raw_text[search_from:search_from + 20000]
                         
                         for pattern in search_patterns:
                             match = re.search(pattern, remaining, re.IGNORECASE)
                             if match:
                                 final_pos = search_from + match.start()
-                                # Go back to start of line
                                 line_start = raw_text.rfind('\n', 0, final_pos) + 1
-                                print(f"  Found original content at character {line_start:,}")
+                                print(f"  Found original at character {line_start:,}")
                                 return raw_text[line_start:]
                     
-                    # AI position looks good
                     print(f"  AI detected content at character {start_pos:,}")
                     return raw_text[start_pos:]
                 else:
@@ -230,19 +286,17 @@ Return ONLY the number."""
     except Exception as e:
         print(f"  AI skip failed ({str(e)[:50]}), using fallback")
     
-    # Fallback
     return brutal_header_skip(raw_text)
+
 
 def brutal_header_skip(text: str) -> str:
     """
     Fallback method: Aggressive pattern-based header removal
-    Used when AI is unavailable or fails
     """
     
     if len(text) < 5000:
         return text
     
-    # Remove lines containing metadata garbage
     lines = text.split('\n')
     clean_lines = []
     
@@ -274,7 +328,6 @@ def brutal_header_skip(text: str) -> str:
                 is_garbage = True
                 break
         
-        # Skip lines that are mostly symbols
         if not is_garbage and line.strip():
             letters = sum(1 for c in line if c.isalpha())
             total = len(line.strip())
@@ -286,39 +339,33 @@ def brutal_header_skip(text: str) -> str:
     
     cleaned = '\n'.join(clean_lines)
     
-    # Find actual content markers
     content_markers = [
-        r'ANNUAL REPORT',
+        r'POSTAL LAWS',
+        r'SECTION 1',
+        r'CHAPTER I',
         r'REPORT OF THE',
         r'DEPARTMENT OF',
-        r'BUREAU OF',
-        r'SECRETARY OF',
-        r'CHAPTER I',
-        r'SECTION 1',
-        r'INTRODUCTION\.',
-        r'PART I'
+        r'REGULATIONS'
     ]
     
     best_start = 0
     
     for marker in content_markers:
-        match = re.search(marker, cleaned[:10000], re.IGNORECASE)
+        match = re.search(marker, cleaned[:15000], re.IGNORECASE)
         if match:
             line_start = cleaned.rfind('\n', 0, match.start()) + 1
             if line_start > best_start:
                 best_start = line_start
     
     if best_start > 0:
-        print(f"  Brutal skip removed {len(text) - len(cleaned[best_start:]):,} chars")
+        print(f"  Brutal skip found content at {best_start:,}")
         return cleaned[best_start:]
     
     print(f"  Brutal skip removed {len(text) - len(cleaned):,} chars")
     return cleaned
-
-
 def search_internet_archive(
     query: str,
-    document_type: str = "government_report",
+    document_type: str = "postal_regulations",
     max_results: int = 20
 ) -> List[Dict]:
     """Search Internet Archive with strict safety filters"""
@@ -391,12 +438,7 @@ def get_document_text(archive_id: str) -> Optional[str]:
 def clean_document_text(raw_text: str, groq_api_key: str = None) -> str:
     """
     Clean document text with AI-powered header detection
-    
-    Flow:
-    1. AI detects exact content start (99% accurate)
-    2. If AI fails → Brutal pattern-based skip (90% accurate)
-    3. Basic OCR cleanup
-    4. Return clean text
+    Uses GPT-OSS-120B for accuracy
     """
     
     if not raw_text:
@@ -433,8 +475,13 @@ def clean_document_text(raw_text: str, groq_api_key: str = None) -> str:
         text = re.sub(old, new, text, flags=re.IGNORECASE)
     
     return text.strip()
-def validate_text_quality(text: str, document_type: str = None) -> Dict:
-    """Strict quality validation (90%+ threshold)"""
+
+
+def validate_text_quality(text: str, document_type: str = None, document_year: int = None) -> Dict:
+    """
+    Strict quality validation (90%+ threshold)
+    Now includes modern language detection
+    """
     
     if not text or len(text) < 500:
         return {
@@ -444,13 +491,24 @@ def validate_text_quality(text: str, document_type: str = None) -> Dict:
             "reason": "Text too short (< 500 chars)"
         }
     
+    # FIRST: Check for modern editorial language
+    modern_check = check_for_modern_language(text, document_year)
+    if not modern_check["is_historical"]:
+        return {
+            "passed": False,
+            "score": 0.0,
+            "details": {"modern_language": modern_check["reason"]},
+            "reason": f"Modern editorial text detected: {modern_check['reason']}"
+        }
+    
     common_words = set([
         'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i',
         'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at',
         'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she',
         'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what',
         'government', 'department', 'report', 'year', 'state', 'city', 'law',
-        'office', 'commission', 'act', 'section', 'shall', 'post', 'service'
+        'office', 'commission', 'act', 'section', 'shall', 'post', 'service',
+        'mail', 'postmaster', 'postal', 'regulation', 'class', 'matter'
     ])
     
     words = re.findall(r'\b[a-zA-Z]+\b', text.lower())
@@ -504,7 +562,8 @@ def validate_text_quality(text: str, document_type: str = None) -> Dict:
         "avg_word_length": f"{avg_word_len:.1f}",
         "sentence_structure": f"{sentence_ratio:.2%}",
         "punctuation_ratio": f"{punct_ratio:.2%}",
-        "total_words": total_words
+        "total_words": total_words,
+        "is_historical": "Yes"
     }
     
     reason = "Passed all quality checks" if passed else "Failed: "
@@ -636,12 +695,13 @@ def select_random_document(
 ) -> Optional[Dict]:
     """
     Select random document with AI-powered header removal
-    
-    New: Accepts groq_api_key parameter for AI header detection
+    Uses GPT-OSS-120B for header detection
+    Includes modern language validation
     """
     
+    # Default to postal_regulations (cleanest content)
     if not document_type:
-        document_type = random.choice(list(DOCUMENT_TYPES.keys()))
+        document_type = "postal_regulations"
     
     if document_type not in DOCUMENT_TYPES:
         print(f"\n[DOCUMENT SCRAPER] Error: Unknown type '{document_type}'")
@@ -651,7 +711,8 @@ def select_random_document(
     print(f"\n[DOCUMENT SCRAPER] Selecting {document_type}")
     print(f"  Quality threshold: 90%+")
     print(f"  Copyright: Pre-1928 + Government sources only")
-    print(f"  Header detection: AI-powered")
+    print(f"  AI Model: GPT-OSS-120B")
+    print(f"  Modern language detection: ENABLED")
     
     docs = search_internet_archive("", document_type, max_results=20)
     
@@ -681,6 +742,11 @@ def select_random_document(
         else:
             print(f"     ✅ Copyright: {copyright_check['reason']}")
         
+        # Get year for modern language check
+        date_str = str(doc.get("date", ""))
+        year_match = re.search(r'\b(1[0-9]{3})\b', date_str)
+        doc_year = int(year_match.group(1)) if year_match else None
+        
         # Get text
         text = get_document_text(archive_id)
         if not text:
@@ -695,8 +761,8 @@ def select_random_document(
             print(f"     ❌ Too short: {word_count} words (need {min_words}+)")
             continue
         
-        # Quality validation
-        quality = validate_text_quality(cleaned_text, document_type)
+        # Quality validation (includes modern language check)
+        quality = validate_text_quality(cleaned_text, document_type, doc_year)
         print(f"     📊 Quality score: {quality['score']:.1%}")
         
         if not quality["passed"]:
@@ -714,6 +780,7 @@ def select_random_document(
         print(f"     Year: {metadata['year']}")
         print(f"     Words: {word_count}")
         print(f"     Quality: {quality['score']:.1%}")
+        print(f"     Historical: {quality['details'].get('is_historical', 'Yes')}")
         
         return {
             "metadata": metadata,
@@ -725,6 +792,6 @@ def select_random_document(
         }
     
     print(f"\n  ❌ FAILED: Tried {attempts} documents, none met quality standards")
-    print(f"     Suggestion: Try a different document type or run again")
+    print(f"     Suggestion: Try 'postal_regulations' or 'civil_service' type")
     
     return None
