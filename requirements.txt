@@ -1,4 +1,6 @@
-edge-tts
-aiofiles
 requests
+beautifulsoup4
 Pillow
+numpy
+edge-tts
+pydub
