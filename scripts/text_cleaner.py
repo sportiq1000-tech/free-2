@@ -105,33 +105,28 @@ def clean_text_with_llm(text: str, api_key: str = None) -> str:
     """
     print(f"  🤖 Cleaning chunk ({len(text)} chars) with LLM...")
     
-    prompt = f"""You are a text formatting expert. Clean and reformat this historical document text.
+    prompt = f"""Task: Fix formatting of this 19th-century text.
+    
+    Instructions:
+    1. Join lines that are split (hard wraps)
+    2. Keep paragraph breaks
+    3. Keep archaic spelling
+    4. OUTPUT ONLY THE CLEANED TEXT. NO CONVERSATION.
 
-INPUT TEXT:
-\"\"\"{text}\"\"\"
-
-TASKS:
-1. Fix hard wraps (join lines that were split at 70 characters)
-2. Preserve paragraph breaks (double newlines)
-3. Keep section headings on their own lines
-4. Fix any obvious OCR errors or typos
-5. Normalize spacing and punctuation
-6. Keep archaic spellings (to-day, connexion, etc.) - these are authentic
-7. Do NOT change the content or meaning
-
-OUTPUT:
-Return ONLY the cleaned text. No explanations, no markdown, just the reformatted text."""
+    Input Text:
+    \"\"\"{text}\"\"\"
+    
+    Cleaned Text:"""
 
     result = call_groq(prompt, api_key=api_key)
     
     if result:
-        # Remove any markdown formatting
+        # Strip potential markdown code blocks
         result = re.sub(r'^```.*\n?', '', result)
         result = re.sub(r'\n?```$', '', result)
         return result.strip()
         
-    return text  # Return original if failed
-
+    return text
 
 def clean_gutenberg_text(text: str, api_key: str = None, use_llm: bool = True) -> Dict:
     """

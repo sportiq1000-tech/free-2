@@ -17,7 +17,7 @@ GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 
 # Model configuration
 MODELS = {
-    "finder": "openai/gpt-oss-120b",      # Finds content
+    "finder": "llama-3.3-70b-versatile",      # Finds content
     "verifier": "llama-3.3-70b-versatile"  # Verifies finding
 }
 
