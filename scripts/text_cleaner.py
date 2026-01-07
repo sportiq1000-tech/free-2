@@ -176,8 +176,8 @@ def select_smart_chunk(text: str, target_words: int) -> str:
 def clean_for_narration(text: str, target_minutes: int = 10, api_key: str = None) -> Dict:
     """
     Main function: 
-    1. Selects RAW chunk first (saving tokens)
-    2. Cleans ONLY that chunk with LLM
+    1. Selects RAW chunk first
+    2. Cleans in SAFE small batches to avoid truncation
     3. Trims to exact duration
     """
     
@@ -188,14 +188,47 @@ def clean_for_narration(text: str, target_minutes: int = 10, api_key: str = None
     target_words = target_minutes * wpm
     print(f"  🎯 Target: {target_words} words ({target_minutes} mins)")
     
-    # Step 1: Select RAW chunk (Zero cost)
-    print(f"  ✂️ Selecting raw chunk from {len(text)} chars...")
-    raw_chunk = select_smart_chunk(text, target_words)
-    print(f"     Selected chunk: {len(raw_chunk)} chars")
+    # Step 1: Select RAW chunk
+    raw_chunk = select_smart_chunk(text, target_words + 200) # Buffer
+    print(f"  ✂️ Raw chunk size: {len(raw_chunk)} chars")
     
-    # Step 2: Clean ONLY this chunk (1 API call)
+    final_text = ""
+    
+    # Step 2: Clean in safe batches (max 3000 chars per call)
     if api_key or GROQ_API_KEY:
-        clean_chunk = clean_text_with_llm(raw_chunk, api_key)
+        # Split raw chunk into smaller pieces to avoid truncation
+        # 3000 chars is safe for 4096 token output limit
+        batch_size = 3000
+        
+        # Split by paragraphs to keep context
+        paragraphs = raw_chunk.split('\n\n')
+        current_batch = []
+        current_len = 0
+        cleaned_parts = []
+        
+        print(f"  🔄 Splitting into safe batches...")
+        
+        for para in paragraphs:
+            if current_len + len(para) > batch_size:
+                # Process this batch
+                batch_text = '\n\n'.join(current_batch)
+                cleaned = clean_text_with_llm(batch_text, api_key)
+                cleaned_parts.append(cleaned)
+                
+                # Reset
+                current_batch = []
+                current_len = 0
+            
+            current_batch.append(para)
+            current_len += len(para)
+        
+        # Process final batch
+        if current_batch:
+            batch_text = '\n\n'.join(current_batch)
+            cleaned = clean_text_with_llm(batch_text, api_key)
+            cleaned_parts.append(cleaned)
+            
+        clean_chunk = '\n\n'.join(cleaned_parts)
     else:
         print("  ⚠️ No API key - using regex cleaning")
         clean_chunk = fix_hard_wraps(raw_chunk)
@@ -227,7 +260,7 @@ def clean_for_narration(text: str, target_minutes: int = 10, api_key: str = None
         "text": final_text,
         "word_count": final_words,
         "estimated_minutes": final_words / wpm,
-        "method": "LLM Chunk Clean"
+        "method": "LLM Batch Clean"
     }
 
 
