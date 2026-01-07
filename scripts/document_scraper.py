@@ -101,8 +101,8 @@ QUALITY_THRESHOLDS = {
 def ai_skip_headers(raw_text: str, groq_api_key: str = None) -> str:
     """
     AI-powered header detection using Groq/Llama
-    Finds EXACTLY where real narrative content starts
-    Skips: Metadata, title pages, table of contents, and index pages
+    Finds EXACTLY where original historical content starts
+    Skips: Metadata, TOC, index, AND modern editorial prefaces
     """
     
     api_key = groq_api_key or GROQ_API_KEY
@@ -111,8 +111,8 @@ def ai_skip_headers(raw_text: str, groq_api_key: str = None) -> str:
         print("  No API key or text too short → using fallback")
         return brutal_header_skip(raw_text)
     
-    # Take larger sample to see past TOC (up to 15000 chars)
-    sample = raw_text[:min(15000, len(raw_text))]
+    # Take large sample (modern prefaces can be 3-5 pages)
+    sample = raw_text[:min(20000, len(raw_text))]
     
     prompt = f"""You are an expert archival processor.
 
@@ -120,32 +120,37 @@ Here is the beginning of a scanned historical document (pre-1928):
 
 \"\"\"{sample}\"\"\"
 
-Your job: Find where the ACTUAL NARRATIVE TEXT begins.
+Your job: Find where the ORIGINAL HISTORICAL TEXT begins.
 
 SKIP ALL OF THESE:
 - Google Books / Internet Archive metadata
 - "Digitized by", library stamps, URLs
-- Title pages with symbols
-- **TABLE OF CONTENTS** - lines like "Chapter 1 ..... 23" or "Agent, county- ..... 45"
-- **INDEX pages** - alphabetical lists with page numbers
-- Modern prefaces
+- Title pages with symbols/decorative text
+- **TABLE OF CONTENTS** - lines like "Chapter 1 ..... 23"
+- **INDEX pages**
+- **MODERN PREFACES** - text about "reprinting", "this edition", "the Committee"
+- **EDITOR'S NOTES** - explanations of the publication process
+- **REPRINT INTRODUCTIONS** - anything written ABOUT the document
 
-LOOK FOR:
-- Full sentences in paragraph form
-- Narrative text, NOT lists
-- Actual document content with complete thoughts
+ESPECIALLY SKIP text mentioning:
+- "reprinted", "this publication", "the Committee has been compelled"
+- "plates kindly supplied", "electrotyped", "illustrations from another source"
+- "it was found impossible to procure"
+- Any text that is ABOUT the document rather than BY the original author
 
-BAD (skip these):
-"Agent, county- first-aid service ..... 23"
-"Agricultural products ..... 45"
-"Chapter 1 ..... 12"
+LOOK FOR the FIRST LINE written by the ORIGINAL 1896 author (not modern editors).
 
-GOOD (start here):
-"The following report presents the activities of the Department during the fiscal year..."
-"CHAPTER I. INTRODUCTION. Agricultural extension work in the United States..."
-"During the period covered by this report, the Bureau..."
+BAD (skip these - modern editorial text):
+"the publication, by the State, of the two volumes entitled..."
+"The Committee has been compelled to provide the illustrations..."
+"Agent, county- ..... 23"
 
-Return ONLY the character position (number) where the first REAL paragraph begins.
+GOOD (original historical text):
+"The frontier forts were established in the year 1755..."
+"CHAPTER I. In the year 1755, during the French and Indian War..."
+"The following report presents the findings of the commission..."
+
+Return ONLY the character position where the ORIGINAL historical narrative begins.
 
 Return ONLY the number."""
 
@@ -172,35 +177,47 @@ Return ONLY the number."""
             if number_match:
                 start_pos = int(number_match.group())
                 
-                # Extended range for TOC (can be up to 20k chars in old books)
-                if 100 <= start_pos <= 20000 and start_pos < len(raw_text):
+                # Extended range (prefaces can be long)
+                if 100 <= start_pos <= 25000 and start_pos < len(raw_text):
                     
-                    # DOUBLE CHECK: Is the detected position actually narrative?
-                    snippet = raw_text[start_pos:start_pos+500]
+                    # VERIFY: Check for editorial language in snippet
+                    snippet = raw_text[start_pos:start_pos+800].lower()
                     
-                    # Count TOC indicators in snippet
-                    dots_in_snippet = snippet.count('..')
-                    lines_in_snippet = snippet.split('\n')
-                    short_lines = sum(1 for line in lines_in_snippet if len(line.strip()) < 40)
+                    editorial_phrases = [
+                        'reprint',
+                        'this edition',
+                        'the committee',
+                        'kindly supplied',
+                        'electrotyped',
+                        'impossible to procure',
+                        'from which they were reprinted'
+                    ]
                     
-                    # If still looks like TOC, skip more
-                    if dots_in_snippet > 5 or short_lines > len(lines_in_snippet) * 0.6:
-                        print(f"  AI position {start_pos:,} still looks like TOC, skipping more...")
+                    has_editorial = any(phrase in snippet for phrase in editorial_phrases)
+                    
+                    if has_editorial:
+                        print(f"  AI position {start_pos:,} still has editorial text, searching further...")
                         
-                        # Find next paragraph marker after AI position
-                        search_from = start_pos + 1000
-                        remaining = raw_text[search_from:]
+                        # Look for chapter markers or section starts
+                        search_patterns = [
+                            r'CHAPTER\s+[IVX1]',
+                            r'INTRODUCTION\.',
+                            r'REPORT\s+OF\s+THE',
+                            r'The\s+frontier\s+forts?\s+(?:were|was)',
+                            r'In\s+the\s+year\s+\d{4}'
+                        ]
                         
-                        # Look for paragraph with full sentences
-                        for i in range(0, min(10000, len(remaining)), 100):
-                            chunk = remaining[i:i+500]
-                            
-                            # Check if this looks like narrative
-                            if chunk.count('.') >= 3 and chunk.count('..') == 0:
-                                # Found narrative!
-                                final_pos = search_from + i
-                                print(f"  Found narrative at character {final_pos:,}")
-                                return raw_text[final_pos:]
+                        search_from = start_pos + 500
+                        remaining = raw_text[search_from:search_from + 15000]
+                        
+                        for pattern in search_patterns:
+                            match = re.search(pattern, remaining, re.IGNORECASE)
+                            if match:
+                                final_pos = search_from + match.start()
+                                # Go back to start of line
+                                line_start = raw_text.rfind('\n', 0, final_pos) + 1
+                                print(f"  Found original content at character {line_start:,}")
+                                return raw_text[line_start:]
                     
                     # AI position looks good
                     print(f"  AI detected content at character {start_pos:,}")
@@ -213,7 +230,7 @@ Return ONLY the number."""
     except Exception as e:
         print(f"  AI skip failed ({str(e)[:50]}), using fallback")
     
-    # Fallback to brutal skip
+    # Fallback
     return brutal_header_skip(raw_text)
 
 def brutal_header_skip(text: str) -> str:
