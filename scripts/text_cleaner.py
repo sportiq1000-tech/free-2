@@ -1,23 +1,18 @@
 """
 Text Cleaner for The Bureaucratic Archivist
-Uses Groq LLMs to clean and format Gutenberg text
-
-Fixes:
-- Hard wraps (70-char line breaks)
-- Split paragraphs
-- OCR artifacts
-- Formatting issues
+Optimized for Groq Rate Limits
+ONLY cleans the specific chunk needed for narration
 """
 
 import os
 import requests
 import re
+import random
 from typing import Optional, Dict
 
 # Configuration
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
-
-# Model for text cleaning (fast and capable)
+# Use versatile model which has reasonable limits (12k TPM / 30 RPM)
 CLEANER_MODEL = "llama-3.3-70b-versatile"
 
 
@@ -25,17 +20,15 @@ def call_groq(
     prompt: str,
     model: str = CLEANER_MODEL,
     api_key: str = None,
-    max_tokens: int = 4000,
-    temperature: float = 0.1
+    max_tokens: int = 4000
 ) -> Optional[str]:
     """
-    Make API call to Groq
+    Make API call to Groq with error handling
     """
     
     key = api_key or GROQ_API_KEY
     
     if not key:
-        print("  ❌ No Groq API key")
         return None
     
     try:
@@ -48,7 +41,7 @@ def call_groq(
             json={
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": temperature,
+                "temperature": 0.1,
                 "max_tokens": max_tokens
             },
             timeout=60
@@ -57,7 +50,7 @@ def call_groq(
         if response.status_code == 200:
             return response.json()["choices"][0]["message"]["content"].strip()
         else:
-            print(f"  ❌ Groq API error {response.status_code}")
+            print(f"  ❌ Groq API Error {response.status_code}: {response.text[:100]}")
             return None
             
     except Exception as e:
@@ -67,17 +60,8 @@ def call_groq(
 
 def fix_hard_wraps(text: str) -> str:
     """
-    Fix Gutenberg-style hard wraps (70-char line breaks)
-    
-    Before:
-    "This is a sentence that was
-    broken across multiple lines
-    because of the 70 character
-    limit in old text files."
-    
-    After:
-    "This is a sentence that was broken across multiple 
-    lines because of the 70 character limit in old text files."
+    Fix Gutenberg-style hard wraps (regex only fallback)
+    Joins lines that shouldn't be split
     """
     
     lines = text.split('\n')
@@ -95,122 +79,31 @@ def fix_hard_wraps(text: str) -> str:
             result.append('')
             continue
         
-        # Check if this line continues previous
-        # (doesn't start with capital after period, or is short)
+        # Heuristic for joining lines
         if current_paragraph:
-            last_char = current_paragraph[-1][-1] if current_paragraph[-1] else ''
-            
-            # If previous line ended mid-sentence, join
-            if last_char not in '.!?:' and not stripped[0].isupper():
-                current_paragraph.append(stripped)
-                continue
-            
-            # If previous line ended with sentence but this is continuation
-            if len(stripped) > 50 and not stripped[0].isupper():
-                current_paragraph.append(stripped)
-                continue
-        
-        # Check if this is a heading (short, possibly all caps)
-        if len(stripped) < 60 and (stripped.isupper() or stripped.endswith(':')):
-            if current_paragraph:
+            # Check if this looks like a new paragraph (e.g. indentation or chapter start)
+            if len(stripped) < 50 and stripped.isupper():
+                # Heading
                 result.append(' '.join(current_paragraph))
                 current_paragraph = []
-            result.append(stripped)
-            continue
-        
-        # Regular line - add to current paragraph
-        current_paragraph.append(stripped)
-    
-    # Don't forget last paragraph
+                result.append(stripped)
+                continue
+                
+            current_paragraph.append(stripped)
+        else:
+            current_paragraph.append(stripped)
+            
     if current_paragraph:
         result.append(' '.join(current_paragraph))
-    
-    return '\n\n'.join([p for p in result if p])
+        
+    return '\n'.join(result)
 
 
-def clean_text_basic(text: str) -> str:
+def clean_text_with_llm(text: str, api_key: str = None) -> str:
     """
-    Basic regex-based cleaning (fast, no API)
+    Clean a specific text chunk using LLM
     """
-    
-    # Fix multiple spaces
-    text = re.sub(r' {2,}', ' ', text)
-    
-    # Fix multiple newlines
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    
-    # Fix common OCR errors
-    text = text.replace(' ,', ',')
-    text = text.replace(' .', '.')
-    text = text.replace(' ;', ';')
-    text = text.replace(' :', ':')
-    text = text.replace(',,', ',')
-    text = text.replace('..', '.')
-    
-    # Fix quotes
-    text = re.sub(r'["""]', '"', text)
-    text = re.sub(r"[''']", "'", text)
-    
-    # Normalize dashes
-    text = re.sub(r'—|–', '-', text)
-    
-    return text.strip()
-
-
-def clean_text_with_llm(
-    text: str,
-    api_key: str = None,
-    chunk_size: int = 3000
-) -> str:
-    """
-    Use LLM to intelligently clean and reformat text
-    
-    Processes in chunks to handle large documents
-    """
-    
-    print("  🤖 Cleaning text with LLM...")
-    
-    # For short texts, process in one go
-    if len(text) < chunk_size:
-        return clean_single_chunk(text, api_key)
-    
-    # Split into chunks at paragraph boundaries
-    paragraphs = text.split('\n\n')
-    chunks = []
-    current_chunk = []
-    current_size = 0
-    
-    for para in paragraphs:
-        if current_size + len(para) > chunk_size and current_chunk:
-            chunks.append('\n\n'.join(current_chunk))
-            current_chunk = []
-            current_size = 0
-        current_chunk.append(para)
-        current_size += len(para)
-    
-    if current_chunk:
-        chunks.append('\n\n'.join(current_chunk))
-    
-    print(f"  📄 Processing {len(chunks)} chunks...")
-    
-    # Process each chunk
-    cleaned_chunks = []
-    for i, chunk in enumerate(chunks):
-        print(f"     Chunk {i+1}/{len(chunks)}...")
-        cleaned = clean_single_chunk(chunk, api_key)
-        if cleaned:
-            cleaned_chunks.append(cleaned)
-        else:
-            # Fallback to basic cleaning if LLM fails
-            cleaned_chunks.append(clean_text_basic(fix_hard_wraps(chunk)))
-    
-    return '\n\n'.join(cleaned_chunks)
-
-
-def clean_single_chunk(text: str, api_key: str = None) -> Optional[str]:
-    """
-    Clean a single chunk of text using LLM
-    """
+    print(f"  🤖 Cleaning chunk ({len(text)} chars) with LLM...")
     
     prompt = f"""You are a text formatting expert. Clean and reformat this historical document text.
 
@@ -229,74 +122,62 @@ TASKS:
 OUTPUT:
 Return ONLY the cleaned text. No explanations, no markdown, just the reformatted text."""
 
-    result = call_groq(prompt, api_key=api_key, max_tokens=4000)
+    result = call_groq(prompt, api_key=api_key)
     
     if result:
-        # Remove any markdown formatting the LLM might have added
+        # Remove any markdown formatting
         result = re.sub(r'^```.*\n?', '', result)
         result = re.sub(r'\n?```$', '', result)
         return result.strip()
-    
-    return None
-
-
-def clean_gutenberg_text(
-    text: str,
-    api_key: str = None,
-    use_llm: bool = True
-) -> Dict:
-    """
-    Main function: Clean Gutenberg text
-    
-    Args:
-        text: Raw text from Gutenberg
-        api_key: Groq API key (optional, uses env var)
-        use_llm: Whether to use LLM cleaning (slower but better)
         
-    Returns:
-        {
-            "cleaned_text": str,
-            "word_count": int,
-            "method": str
-        }
+    return text  # Return original if failed
+
+
+def clean_gutenberg_text(text: str, api_key: str = None, use_llm: bool = True) -> Dict:
+    """
+    Simple wrapper for compatibility
+    Just does basic regex cleaning on full text
+    """
+    cleaned = fix_hard_wraps(text)
+    return {
+        "cleaned_text": cleaned,
+        "word_count": len(cleaned.split()),
+        "method": "regex"
+    }
+
+
+def select_smart_chunk(text: str, target_words: int) -> str:
+    """
+    Select a contiguous chunk of text from the middle of the document
+    Avoids headers/footers by skipping first/last 10%
     """
     
-    print("\n[TEXT CLEANER]")
+    words = text.split()
+    total_words = len(words)
     
-    original_words = len(text.split())
-    print(f"  📄 Input: {len(text):,} chars, {original_words:,} words")
+    if total_words <= target_words:
+        return text
     
-    # Step 1: Basic cleaning (always do this)
-    text = clean_text_basic(text)
+    # Define safe zone (middle 80%)
+    start_buffer = int(total_words * 0.1)
+    end_buffer = int(total_words * 0.9) - target_words
     
-    # Step 2: Fix hard wraps
-    text = fix_hard_wraps(text)
-    
-    # Step 3: LLM cleaning (optional but recommended)
-    if use_llm and (api_key or GROQ_API_KEY):
-        text = clean_text_with_llm(text, api_key)
-        method = "LLM + regex"
+    if start_buffer < end_buffer:
+        # Pick random start point in safe zone
+        start_idx = random.randint(start_buffer, end_buffer)
     else:
-        method = "regex only"
-        print("  ⚠️ Skipping LLM cleaning (no API key or disabled)")
-    
-    # Final stats
-    final_words = len(text.split())
-    print(f"  ✅ Output: {len(text):,} chars, {final_words:,} words")
-    print(f"  📊 Method: {method}")
-    
-    return {
-        "cleaned_text": text,
-        "word_count": final_words,
-        "method": method
-    }
+        start_idx = 0
+        
+    # Extract chunk with some buffer
+    chunk_words = words[start_idx : start_idx + target_words + 200]
+    return ' '.join(chunk_words)
 
 
 def clean_for_narration(text: str, target_minutes: int = 10, api_key: str = None) -> Dict:
     """
     Main function: 
-    1. Selects RAW chunk first
-    2. Cleans in SAFE small batches to avoid truncation
+    1. Selects RAW chunk first (saving tokens)
+    2. Cleans ONLY that chunk with LLM
     3. Trims to exact duration
     """
     
@@ -307,47 +188,14 @@ def clean_for_narration(text: str, target_minutes: int = 10, api_key: str = None
     target_words = target_minutes * wpm
     print(f"  🎯 Target: {target_words} words ({target_minutes} mins)")
     
-    # Step 1: Select RAW chunk
-    raw_chunk = select_smart_chunk(text, target_words + 200) # Buffer
-    print(f"  ✂️ Raw chunk size: {len(raw_chunk)} chars")
+    # Step 1: Select RAW chunk (Zero cost)
+    print(f"  ✂️ Selecting raw chunk from {len(text)} chars...")
+    raw_chunk = select_smart_chunk(text, target_words)
+    print(f"     Selected chunk: {len(raw_chunk)} chars")
     
-    final_text = ""
-    
-    # Step 2: Clean in safe batches (max 3000 chars per call)
+    # Step 2: Clean ONLY this chunk (1 API call)
     if api_key or GROQ_API_KEY:
-        # Split raw chunk into smaller pieces to avoid truncation
-        # 3000 chars is safe for 4096 token output limit
-        batch_size = 3000
-        
-        # Split by paragraphs to keep context
-        paragraphs = raw_chunk.split('\n\n')
-        current_batch = []
-        current_len = 0
-        cleaned_parts = []
-        
-        print(f"  🔄 Splitting into safe batches...")
-        
-        for para in paragraphs:
-            if current_len + len(para) > batch_size:
-                # Process this batch
-                batch_text = '\n\n'.join(current_batch)
-                cleaned = clean_text_with_llm(batch_text, api_key)
-                cleaned_parts.append(cleaned)
-                
-                # Reset
-                current_batch = []
-                current_len = 0
-            
-            current_batch.append(para)
-            current_len += len(para)
-        
-        # Process final batch
-        if current_batch:
-            batch_text = '\n\n'.join(current_batch)
-            cleaned = clean_text_with_llm(batch_text, api_key)
-            cleaned_parts.append(cleaned)
-            
-        clean_chunk = '\n\n'.join(cleaned_parts)
+        clean_chunk = clean_text_with_llm(raw_chunk, api_key)
     else:
         print("  ⚠️ No API key - using regex cleaning")
         clean_chunk = fix_hard_wraps(raw_chunk)
@@ -379,46 +227,13 @@ def clean_for_narration(text: str, target_minutes: int = 10, api_key: str = None
         "text": final_text,
         "word_count": final_words,
         "estimated_minutes": final_words / wpm,
-        "method": "LLM Batch Clean"
+        "method": "LLM Chunk Clean"
     }
 
 
 # Test function
 if __name__ == "__main__":
-    # Test with sample Gutenberg-style text
-    test_text = """
-CHAPTER I.
-
-INTRODUCTION.
-
-All business should be brought before
-the assembly by a motion of a member,
-or by the presentation of a communi-
-cation to the assembly. It is not usual
-to make motions to receive reports of
-committees or communications to the
-assembly.
-
-Motions are of two kinds, viz.: (1) Main
-or principal motions, which bring busi-
-ness before the assembly; and (2) Sec-
-ondary motions, which may be made
-while the main motion is pending.
-"""
-    
-    print("=" * 70)
-    print("Testing Text Cleaner")
-    print("=" * 70)
-    
-    print("\nOriginal text:")
-    print("-" * 40)
-    print(test_text)
-    
-    # Test without LLM (regex only)
-    print("\n" + "=" * 70)
-    print("Testing basic cleaning (no LLM)...")
-    result = clean_gutenberg_text(test_text, use_llm=False)
-    
-    print("\nCleaned text:")
-    print("-" * 40)
-    print(result["cleaned_text"])
+    print("Testing Text Cleaner...")
+    sample = "This is a test text.\nIt has hard wraps.\nLike this."
+    result = clean_for_narration(sample, target_minutes=1)
+    print(f"Result: {result['text']}")
