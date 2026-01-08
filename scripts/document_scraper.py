@@ -135,7 +135,16 @@ def get_all_documents():
 
 # For compatibility with existing pipeline
 extract_document_metadata = lambda text, meta: meta
-split_text_for_duration = lambda text, mins, wpm=120: ' '.join(text.split()[:mins*wpm])
+def split_text_for_duration(text, target_minutes, words_per_minute=120):
+    """
+    Split text into a chunk that fits the target duration.
+    Supports keyword arguments for compatibility.
+    """
+    target_words = int(target_minutes * words_per_minute)
+    words = text.split()
+    if len(words) <= target_words:
+        return text
+    return ' '.join(words[:target_words])
 
 
 # Test
