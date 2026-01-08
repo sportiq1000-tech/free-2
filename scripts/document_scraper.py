@@ -18,10 +18,6 @@ from gutenberg_scraper import (
     CURATED_DOCUMENTS
 )
 
-from text_cleaner import (
-    clean_gutenberg_text,
-    clean_for_narration
-)
 
 
 # Configuration
@@ -33,80 +29,45 @@ def select_random_document(
     target_minutes: int = 10,
     groq_api_key: str = None
 ) -> Optional[Dict]:
-    """
-    Simplified Pipeline: Fetch → Regex Clean → Return
-    Reserves LLM credits for script generation.
-    """
     
-    api_key = groq_api_key or GROQ_API_KEY
+    print("\n[DOCUMENT SCRAPER - QUALITY CONTROL]")
     
-    print("\n" + "=" * 70)
-    print("📚 BUREAUCRATIC ARCHIVIST - DOCUMENT PIPELINE (OPTIMIZED)")
-    print("=" * 70)
-    print(f"Source: Project Gutenberg (100% Public Domain)")
-    print(f"Target: {target_minutes} minutes")
-    print(f"Category: {category or 'random'}")
-    print("=" * 70)
-    
-    # 1. FETCH
-    print("\n📥 STEP 1: Fetching Document...")
-    document = fetch_gutenberg_document(category=category)
-    
-    if not document:
-        print("  ❌ Failed to fetch document")
-        return None
-    
-    metadata = document['metadata']
-    raw_text = document['text']
-    
-    # 2. CLEAN (Regex only)
-    print("\n🧹 STEP 2: Cleaning Text (Regex)...")
-    cleaned_result = clean_for_narration(
-        raw_text,
-        target_minutes=target_minutes,
-        api_key=api_key
-    )
-    
-    cleaned_text = cleaned_result['text']
-    word_count = cleaned_result['word_count']
-    
-    # 3. PREPARE OUTPUT
-    print("\n📦 STEP 3: Preparing Output...")
-    
-    # Determine document type
-    if category:
-        document_type = category
-    elif 'rule' in metadata['title'].lower():
-        document_type = 'parliamentary'
-    elif 'manual' in metadata['title'].lower():
-        document_type = 'manuals'
-    else:
-        document_type = 'government'
-
-    # Placeholders
-    images = [f"paper_texture_{i}.jpg" for i in range(5)]
-    
-    quality_details = {
-        "source": "Project Gutenberg",
-        "word_count": word_count,
-        "cleaning_method": "Regex"
-    }
-
-    print("\n" + "=" * 70)
-    print("✅ DOCUMENT READY (Zero LLM Used)")
-    print("=" * 70)
-    print(f"Title: {metadata['title']}")
-    print(f"Words: {word_count:,}")
-    print("=" * 70)
-    
-    return {
-        "metadata": metadata,
-        "text": cleaned_text,
-        "images": images,
-        "document_type": document_type,
-        "quality_score": 1.0,
-        "quality_details": quality_details
-    }
+    # Try up to 5 times to get good English text
+    for attempt in range(5):
+        # Step 1: Fetch
+        document = fetch_gutenberg_document(category=category)
+        if not document: continue
+        
+        # Step 2: Clean
+        from text_cleaner import fix_hard_wraps, select_smart_chunk
+        
+        raw_text = document['text']
+        target_words = target_minutes * 130
+        chunk = select_smart_chunk(raw_text, target_words)
+        clean_text = fix_hard_wraps(chunk)
+        
+        # Step 3: English Check (Basic)
+        # Count common English words to avoid Latin/Foreign texts
+        common = ['the', 'and', 'that', 'with', 'this', 'from', 'have', 'for']
+        english_score = sum(1 for w in common if w in clean_text.lower())
+        
+        if english_score < 3:
+            print(f"  ⚠️ Rejecting Attempt {attempt+1}: Looks like Latin/Foreign")
+            continue
+            
+        print(f"  ✅ Text prepared ({len(clean_text.split())} words)")
+        
+        return {
+            "metadata": document['metadata'],
+            "text": clean_text,
+            "images": [], # Will be filled by auto_visuals
+            "document_type": category or 'document',
+            "quality_score": 0.95,
+            "quality_details": {"source": "Gutenberg"}
+        }
+        
+    print("❌ Failed to find English text after 5 attempts")
+    return None
 
 
 def get_document_images(archive_id: str, max_images: int = 10):
